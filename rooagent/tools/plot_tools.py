@@ -2,7 +2,7 @@ from typing import List
 import ROOT
 from langchain_core.tools import tool
 
-
+# ================= ROOT STYLE =================
 ROOT.gStyle.SetOptStat(0)
 
 ROOT.gStyle.SetTitleFont(42, "XYZ")
@@ -23,12 +23,12 @@ ROOT.gStyle.SetLineWidth(2)
 ROOT.gStyle.SetPadGridX(False)
 ROOT.gStyle.SetPadGridY(False)
 
-
+# ================= SINGLE VARIABLE =================
 @tool
 def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
                        output_pdf: str,
-                       ) -> str:
+                       normalize: bool = False) -> str:
     """
     Plot a single variable from a ROOT TTree and save it as a histogram PDF.
 
@@ -48,35 +48,40 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
         Upper edge of the histogram range.
     output_pdf : str
         Path to save the resulting histogram as a PDF file.
+    normalize : bool, optional
+        Whether to normalize the histogram to unit area (default False).
 
     Returns
     -------
     str
         Confirmation message indicating the file path of the saved PDF.
-
     """
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
     h = hist_ptr.GetValue()
     ROOT.SetOwnership(h, False)
-    h.SetLineWidth(3)
+    
     if normalize and h.Integral() > 0:
         h.Scale(1.0 / h.Integral())
+
+    h.SetLineWidth(3)
     h.SetLineColor(ROOT.kBlue + 1)
     h.GetXaxis().SetTitle(variable)
-    h.GetYaxis().SetTitle("Events")
+    h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
+
     canv = ROOT.TCanvas("c1", "", 900, 700)
     h.Draw("HIST")
-    #canv.SetGrid()
     canv.Update()
     canv.SaveAs(output_pdf)
     return f"Saved plot to {output_pdf}"
 
 
+# ================= COMPARE TREE VARIABLES =================
 @tool
 def compare_tree_variables(file_paths: List[str], tree_names: List[str],
                            variables: List[str], bins: int, xmin: float, xmax: float,
-                           legends: List[str], output_pdf: str) -> str:
+                           legends: List[str], output_pdf: str,
+                           normalize: bool = False) -> str:
     """
     Compare the same or different variables from multiple ROOT TTrees on the same histogram.
 
@@ -98,15 +103,15 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
         List of labels for the legend corresponding to each histogram.
     output_pdf : str
         Path to save the resulting comparison histogram as a PDF file.
+    normalize : bool, optional
+        Whether to normalize histograms to unit area (default False).
 
     Returns
     -------
     str
         Confirmation message indicating the file path of the saved PDF.
-
     """
     canv = ROOT.TCanvas("c1", "Comparison", 900, 700)
-    #canv.SetGrid()
     legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
     colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
     hist_list = []
@@ -117,11 +122,15 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
         h.SetDirectory(0)
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
         h.SetLineColor(colors[i % len(colors)])
         h.SetLineWidth(3)
         h.SetTitle("")
         h.GetXaxis().SetTitle(var)
-        h.GetYaxis().SetTitle("Events")
+        h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
         hist_list.append(h)
         legend.AddEntry(h, label, "l")
 
@@ -140,6 +149,7 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
     return f"Saved comparison histogram to {output_pdf}"
 
 
+# ================= DRAW HISTOGRAMS FROM FILES =================
 @tool
 def draw_histograms_same_canvas(
     file_paths: List[str],
@@ -148,7 +158,8 @@ def draw_histograms_same_canvas(
     output_pdf: str,
     xlabel: str = "",
     ylabel: str = "Events",
-    logy: bool = False
+    logy: bool = False,
+    normalize: bool = False
 ) -> str:
     """
     Draw multiple ROOT histograms from different ROOT files on the same canvas
@@ -170,33 +181,27 @@ def draw_histograms_same_canvas(
         Label for the Y-axis (default "Events").
     logy : bool, optional
         Whether to use a logarithmic Y-axis (default False).
+    normalize : bool, optional
+        Whether to normalize histograms to unit area (default False).
 
     Returns
     -------
     str
         Confirmation message with saved file.
     """
-
-    # Create canvas
     canv = ROOT.TCanvas("c1", "Combined Histograms", 1000, 700)
-    # canv.SetGridx()
-    # canv.SetGridy()
     if logy:
         canv.SetLogy(True)
 
-    # Legend
     legend = ROOT.TLegend(0.65, 0.7, 0.9, 0.9)
     legend.SetBorderSize(0)
     legend.SetFillColor(0)
     legend.SetTextFont(42)
     legend.SetTextSize(0.035)
 
-    # Color and line style palette
     colors = [ROOT.kBlue+1, ROOT.kRed+1, ROOT.kGreen+2, ROOT.kMagenta+1, ROOT.kOrange+7, ROOT.kCyan+2]
-
     hist_list = []
 
-    # Load histograms
     for i, (fpath, hname, label) in enumerate(zip(file_paths, hist_names, legends)):
         f = ROOT.TFile.Open(fpath)
         if not f or f.IsZombie():
@@ -208,9 +213,14 @@ def draw_histograms_same_canvas(
             continue
 
         h.SetDirectory(0)
+        ROOT.SetOwnership(h, False)
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
         h.SetLineColor(colors[i % len(colors)])
         h.SetLineWidth(3)
-        h.SetLineStyle(1 + i % 4)  # Different line styles
+        h.SetLineStyle(1 + i % 4)
         hist_list.append(h)
         legend.AddEntry(h, label, "l")
         f.Close()
@@ -218,12 +228,11 @@ def draw_histograms_same_canvas(
     if not hist_list:
         return "Error: No histograms were found."
 
-    # Determine max for scaling
     max_val = max(h.GetMaximum() for h in hist_list)
     for h in hist_list:
         h.SetMaximum(max_val * 1.3)
         h.GetXaxis().SetTitle(xlabel)
-        h.GetYaxis().SetTitle(ylabel)
+        h.GetYaxis().SetTitle("Normalized Events" if normalize else ylabel)
         h.GetXaxis().SetTitleFont(42)
         h.GetYaxis().SetTitleFont(42)
         h.GetXaxis().SetTitleSize(0.045)
@@ -231,22 +240,18 @@ def draw_histograms_same_canvas(
         h.GetXaxis().SetLabelSize(0.04)
         h.GetYaxis().SetLabelSize(0.04)
 
-    # Draw histograms
     for i, h in enumerate(hist_list):
         draw_opt = "HIST" if i == 0 else "HIST SAME"
         h.Draw(draw_opt)
 
-    # Draw legend
     legend.Draw()
-
     canv.Update()
     canv.SaveAs(output_pdf)
 
     return f"Saved combined histogram plot to {output_pdf}"
 
 
-
-
+# ================= 2D HISTOGRAM =================
 @tool
 def draw_2d_histogram(
     file_path: str,
@@ -254,7 +259,8 @@ def draw_2d_histogram(
     output_pdf: str,
     xlabel: str = "",
     ylabel: str = "",
-    color_palette: int = 55  # ROOT palette
+    color_palette: int = 55,
+    normalize: bool = False
 ) -> str:
     """
     Draw a 2D histogram from a ROOT file with professional styling and save as a PDF.
@@ -271,10 +277,10 @@ def draw_2d_histogram(
         X-axis label (default "").
     ylabel : str, optional
         Y-axis label (default "").
-    logz : bool, optional
-        Whether to use logarithmic scale on the Z-axis (default False).
     color_palette : int, optional
         ROOT color palette index (default 55).
+    normalize : bool, optional
+        Whether to normalize the histogram to unit area (default False).
 
     Returns
     -------
@@ -293,12 +299,11 @@ def draw_2d_histogram(
     h.SetDirectory(0)
     ROOT.SetOwnership(h, False)
 
-    # Canvas
-    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
-    # canv.SetGridx()
-    # canv.SetGridy()
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
 
-    # Axis labels
+    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
+
     h.GetXaxis().SetTitle(xlabel)
     h.GetYaxis().SetTitle(ylabel)
     h.GetXaxis().SetTitleFont(42)
@@ -308,7 +313,6 @@ def draw_2d_histogram(
     h.GetXaxis().SetLabelSize(0.04)
     h.GetYaxis().SetLabelSize(0.04)
 
-    # Style
     ROOT.gStyle.SetPalette(color_palette)
     h.Draw("COLZ")
 
