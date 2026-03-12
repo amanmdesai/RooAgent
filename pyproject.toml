@@ -23,7 +23,7 @@ dependencies = [
 
 requires-python = ">=3.10"
 [project.scripts]
-rooagent = "rooagent.src.core:main"
+rooagent = "rooagent.agent:main"
 
 [project.urls]
 Homepage = "https://github.com/amanmdesai/RooAgent"

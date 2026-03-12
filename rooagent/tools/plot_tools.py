@@ -27,7 +27,8 @@ ROOT.gStyle.SetPadGridY(False)
 @tool
 def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
-                       output_pdf: str) -> str:
+                       output_pdf: str,
+                       ) -> str:
     """
     Plot a single variable from a ROOT TTree and save it as a histogram PDF.
 
@@ -59,6 +60,8 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
     h = hist_ptr.GetValue()
     ROOT.SetOwnership(h, False)
     h.SetLineWidth(3)
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
     h.SetLineColor(ROOT.kBlue + 1)
     h.GetXaxis().SetTitle(variable)
     h.GetYaxis().SetTitle("Events")
