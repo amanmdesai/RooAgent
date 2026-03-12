@@ -24,6 +24,84 @@ ROOT.gStyle.SetPadGridX(False)
 ROOT.gStyle.SetPadGridY(False)
 
 # ================= SINGLE VARIABLE =================
+
+
+# ================= DRAW SINGLE 1D HISTOGRAM =================
+@tool
+def draw_1d_histogram(
+    file_path: str,
+    hist_name: str,
+    output_pdf: str,
+    xlabel: str = "",
+    ylabel: str = "Events",
+    logy: bool = False,
+    normalize: bool = False,
+    line_color: int = ROOT.kBlue+1
+) -> str:
+    """
+    Draw a 1D histogram from a ROOT file and save it as a PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the histogram.
+    hist_name : str
+        Name of the 1D histogram inside the ROOT file.
+    output_pdf : str
+        Output PDF file path.
+    xlabel : str, optional
+        Label for the X-axis (default "").
+    ylabel : str, optional
+        Label for the Y-axis (default "Events").
+    logy : bool, optional
+        Whether to use a logarithmic Y-axis (default False).
+    normalize : bool, optional
+        Whether to normalize the histogram to unit area (default False).
+    line_color : int, optional
+        ROOT line color (default ROOT.kBlue+1).
+
+    Returns
+    -------
+    str
+        Confirmation message with the saved PDF path.
+    """
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return f"Error: Could not open file {file_path}"
+
+    h = f.Get(hist_name)
+    if not h:
+        f.Close()
+        return f"Error: Histogram {hist_name} not found in file {file_path}"
+
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
+
+    h.SetLineColor(line_color)
+    h.SetLineWidth(3)
+    h.GetXaxis().SetTitle(xlabel)
+    h.GetYaxis().SetTitle("Normalized Events" if normalize else ylabel)
+    h.GetXaxis().SetTitleFont(42)
+    h.GetYaxis().SetTitleFont(42)
+    h.GetXaxis().SetTitleSize(0.045)
+    h.GetYaxis().SetTitleSize(0.045)
+    h.GetXaxis().SetLabelSize(0.04)
+    h.GetYaxis().SetLabelSize(0.04)
+
+    canv = ROOT.TCanvas("c1", "1D Histogram", 900, 700)
+    if logy:
+        canv.SetLogy(True)
+
+    h.Draw("HIST")
+    canv.Update()
+    canv.SaveAs(output_pdf)
+    f.Close()
+
+    return f"Saved 1D histogram {hist_name} to {output_pdf}"
+
 @tool
 def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
@@ -83,7 +161,7 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
                            legends: List[str], output_pdf: str,
                            normalize: bool = False) -> str:
     """
-    Compare the same or different variables from multiple ROOT TTrees on the same histogram.
+    Compare the variables defined in ROOT TTrees on the same histogram.
 
     Parameters
     ----------
@@ -162,7 +240,7 @@ def draw_histograms_same_canvas(
     normalize: bool = False
 ) -> str:
     """
-    Draw multiple ROOT histograms from different ROOT files on the same canvas
+    Compare ROOT histograms from different ROOT files on the same canvas
     and save the resulting plot to a PDF file with professional styling.
 
     Parameters
