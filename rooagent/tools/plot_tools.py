@@ -142,7 +142,7 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
         h.SetMaximum(max_val * 1.3)
         draw_opt = "HIST" if i == 0 else "HIST SAME"
         h.Draw(draw_opt)
-
+    legend.SetFillStyle(0)
     legend.Draw()
     canv.Update()
     canv.SaveAs(output_pdf)
@@ -244,6 +244,7 @@ def draw_histograms_same_canvas(
         draw_opt = "HIST" if i == 0 else "HIST SAME"
         h.Draw(draw_opt)
 
+    legend.SetFillStyle(0)
     legend.Draw()
     canv.Update()
     canv.SaveAs(output_pdf)
