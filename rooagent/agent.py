@@ -3,31 +3,32 @@ from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
 from typing_extensions import TypedDict, Annotated
 import operator
-import inspect
-import pkgutil
-import importlib
 
 # Import all tools from the tools subpackage
-from . import tools
+from .tools import *
 
 # Initialize LLM model
 model = ChatOllama(model="gpt-oss:latest", temperature=0)
 
-
-def get_all_tools():
-    all_tools = []
-    for _, module_name, _ in pkgutil.iter_modules(tools.__path__):
-        module = importlib.import_module(f"{tools.__name__}.{module_name}")
-        for name, obj in inspect.getmembers(module, inspect.isfunction):
-            # Only add functions that have the 'name' attribute from @tool
-            if hasattr(obj, "name"):
-                all_tools.append(obj)
-    return all_tools
-
-tools = get_all_tools()
-tools_by_name = {tool.name: tool for tool in tools}
+# Register tools
+tools = [
+    get_histogram_stats,
+    apply_cut_and_count,
+    compute_significance,
+    plot_tree_variable,
+    compare_tree_variables,
+    root_tree_to_csv,
+    define_variable_and_plot,
+    fit_tree_variable, 
+    fit_histogram,
+    draw_histograms_same_canvas,
+    draw_2d_histogram,
+    find_optimal_cut,
+    draw_1d_histogram
+]
 
 # Map tool names to tool objects
+tools_by_name = {tool.name: tool for tool in tools}
 model_with_tools = model.bind_tools(tools)
 
 # Define message state for LangGraph
