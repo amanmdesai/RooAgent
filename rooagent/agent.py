@@ -24,7 +24,8 @@ tools = [
     draw_histograms_same_canvas,
     draw_2d_histogram,
     find_optimal_cut,
-    draw_1d_histogram
+    draw_1d_histogram,
+    define_tree_variable,
 ]
 
 # Map tool names to tool objects

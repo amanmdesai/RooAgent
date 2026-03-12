@@ -161,7 +161,7 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
                            legends: List[str], output_pdf: str,
                            normalize: bool = False) -> str:
     """
-    Compare the variables defined in ROOT TTrees on the same histogram.
+    Compare the variables defined in ROOT TTrees of two different files on the same histogram.
 
     Parameters
     ----------
