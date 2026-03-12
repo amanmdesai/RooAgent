@@ -46,7 +46,7 @@ def define_variable_and_plot(file_path: str, tree_name: str, new_variables: dict
     h.GetXaxis().SetTitle(variable_to_plot)
     h.GetYaxis().SetTitle("Events")
     canvas = ROOT.TCanvas("c1", "", 900, 700)
-    canvas.SetGrid()
+    #canvas.SetGrid()
     h.Draw("HIST")
     canvas.Update()
     canvas.SaveAs(output_file)

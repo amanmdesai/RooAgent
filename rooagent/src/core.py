@@ -130,7 +130,7 @@ def main():
     while True:
         user_input = input("User: ")
         if user_input.lower() in ["exit", "quit"]:
-            print("Thanks for using ROOT Agent!")
+            print("Thanks for using RooAgent!")
             break
         state["messages"].append(HumanMessage(content=user_input))
         state = agent.invoke(state)
