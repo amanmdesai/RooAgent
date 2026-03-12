@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "RooAgent"
+version = "0.1.0"
+description = "Agent For ROOT"
+authors = [
+    { name="Aman Desai", email="amanmukeshdesai@gmail.com"}
+]
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = [
+    "langchain", 
+    "langchain-core",
+    "langgraph",
+    "langchain-ollama",
+    "uproot", 
+    "pandas", 
+    "numpy",
+]
+
+requires-python = ">=3.10"
+[project.scripts]
+rooagent = "rooagent.src.core:main"
+
+[project.urls]
+Homepage = "https://github.com/amanmdesai/RooAgent"
