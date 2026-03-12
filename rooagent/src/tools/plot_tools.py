@@ -20,8 +20,8 @@ ROOT.gStyle.SetLegendFillColor(0)
 ROOT.gStyle.SetFrameLineWidth(2)
 ROOT.gStyle.SetLineWidth(2)
 
-ROOT.gStyle.SetPadGridX(True)
-ROOT.gStyle.SetPadGridY(True)
+ROOT.gStyle.SetPadGridX(False)
+ROOT.gStyle.SetPadGridY(False)
 
 
 @tool
@@ -29,7 +29,30 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
                        output_pdf: str) -> str:
     """
-    Plot a variable from a ROOT TTree and save it as an image.
+    Plot a single variable from a ROOT TTree and save it as a histogram PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the TTree.
+    tree_name : str
+        Name of the TTree to read from the ROOT file.
+    variable : str
+        Name of the variable to histogram.
+    bins : int
+        Number of bins in the histogram.
+    xmin : float
+        Lower edge of the histogram range.
+    xmax : float
+        Upper edge of the histogram range.
+    output_pdf : str
+        Path to save the resulting histogram as a PDF file.
+
+    Returns
+    -------
+    str
+        Confirmation message indicating the file path of the saved PDF.
+
     """
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
@@ -41,23 +64,50 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
     h.GetYaxis().SetTitle("Events")
     canv = ROOT.TCanvas("c1", "", 900, 700)
     h.Draw("HIST")
-    canv.SetGrid()
+    #canv.SetGrid()
     canv.Update()
     canv.SaveAs(output_pdf)
     return f"Saved plot to {output_pdf}"
+
 
 @tool
 def compare_tree_variables(file_paths: List[str], tree_names: List[str],
                            variables: List[str], bins: int, xmin: float, xmax: float,
                            legends: List[str], output_pdf: str) -> str:
     """
-    Compare variables from multiple TTrees on the same histogram.
+    Compare the same or different variables from multiple ROOT TTrees on the same histogram.
+
+    Parameters
+    ----------
+    file_paths : List[str]
+        List of paths to ROOT files containing the TTrees.
+    tree_names : List[str]
+        List of TTree names corresponding to each ROOT file.
+    variables : List[str]
+        List of variable names to histogram from each TTree.
+    bins : int
+        Number of bins for all histograms.
+    xmin : float
+        Lower edge of the histogram range.
+    xmax : float
+        Upper edge of the histogram range.
+    legends : List[str]
+        List of labels for the legend corresponding to each histogram.
+    output_pdf : str
+        Path to save the resulting comparison histogram as a PDF file.
+
+    Returns
+    -------
+    str
+        Confirmation message indicating the file path of the saved PDF.
+
     """
     canv = ROOT.TCanvas("c1", "Comparison", 900, 700)
-    canv.SetGrid()
+    #canv.SetGrid()
     legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
     colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
     hist_list = []
+
     for i, (fpath, tname, var, label) in enumerate(zip(file_paths, tree_names, variables, legends)):
         df = ROOT.RDataFrame(tname, fpath)
         hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var)
@@ -71,17 +121,21 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
         h.GetYaxis().SetTitle("Events")
         hist_list.append(h)
         legend.AddEntry(h, label, "l")
+
     if not hist_list:
         return "No histograms created."
+
     max_val = max(h.GetMaximum() for h in hist_list)
     for i, h in enumerate(hist_list):
         h.SetMaximum(max_val * 1.3)
         draw_opt = "HIST" if i == 0 else "HIST SAME"
         h.Draw(draw_opt)
+
     legend.Draw()
     canv.Update()
     canv.SaveAs(output_pdf)
     return f"Saved comparison histogram to {output_pdf}"
+
 
 @tool
 def draw_histograms_same_canvas(
@@ -122,8 +176,8 @@ def draw_histograms_same_canvas(
 
     # Create canvas
     canv = ROOT.TCanvas("c1", "Combined Histograms", 1000, 700)
-    canv.SetGridx()
-    canv.SetGridy()
+    # canv.SetGridx()
+    # canv.SetGridy()
     if logy:
         canv.SetLogy(True)
 
@@ -186,3 +240,77 @@ def draw_histograms_same_canvas(
     canv.SaveAs(output_pdf)
 
     return f"Saved combined histogram plot to {output_pdf}"
+
+
+
+
+@tool
+def draw_2d_histogram(
+    file_path: str,
+    hist_name: str,
+    output_pdf: str,
+    xlabel: str = "",
+    ylabel: str = "",
+    color_palette: int = 55  # ROOT palette
+) -> str:
+    """
+    Draw a 2D histogram from a ROOT file with professional styling and save as a PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the histogram.
+    hist_name : str
+        Name of the 2D histogram inside the ROOT file.
+    output_pdf : str
+        Output PDF file path.
+    xlabel : str, optional
+        X-axis label (default "").
+    ylabel : str, optional
+        Y-axis label (default "").
+    logz : bool, optional
+        Whether to use logarithmic scale on the Z-axis (default False).
+    color_palette : int, optional
+        ROOT color palette index (default 55).
+
+    Returns
+    -------
+    str
+        Confirmation message with the saved PDF path.
+    """
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return f"Error: Could not open file {file_path}"
+
+    h = f.Get(hist_name)
+    if not h:
+        f.Close()
+        return f"Error: Histogram {hist_name} not found in file {file_path}"
+
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+
+    # Canvas
+    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
+    # canv.SetGridx()
+    # canv.SetGridy()
+
+    # Axis labels
+    h.GetXaxis().SetTitle(xlabel)
+    h.GetYaxis().SetTitle(ylabel)
+    h.GetXaxis().SetTitleFont(42)
+    h.GetYaxis().SetTitleFont(42)
+    h.GetXaxis().SetTitleSize(0.045)
+    h.GetYaxis().SetTitleSize(0.045)
+    h.GetXaxis().SetLabelSize(0.04)
+    h.GetYaxis().SetLabelSize(0.04)
+
+    # Style
+    ROOT.gStyle.SetPalette(color_palette)
+    h.Draw("COLZ")
+
+    canv.Update()
+    canv.SaveAs(output_pdf)
+    f.Close()
+
+    return f"Saved 2D histogram to {output_pdf}"

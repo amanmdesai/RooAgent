@@ -16,4 +16,5 @@ __all__ = [
     "fit_tree_variable",
     "fit_histogram",
     "draw_histograms_same_canvas",
+    "draw_2d_histogram",
 ]
