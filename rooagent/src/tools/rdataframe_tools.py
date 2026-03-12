@@ -119,3 +119,82 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     canvas.Update()
     canvas.SaveAs(output_file)
     return f"Plot saved to {output_file}"
+
+
+@tool
+def find_optimal_cut(signal_file: str,
+                     background_file: str,
+                     tree_name: str,
+                     variable: str,
+                     min_cut: float,
+                     max_cut: float,
+                     step: float,
+                     base_cut: str = "") -> str:
+    """
+    Scan a cut on a variable and find the value that maximizes S/sqrt(S+B).
+
+    Parameters
+    ----------
+    signal_file : str
+        ROOT file containing the signal TTree.
+    background_file : str
+        ROOT file containing the background TTree.
+    tree_name : str
+        Name of the TTree in both files.
+    variable : str
+        Variable to scan (e.g., "pt", "mass").
+    min_cut : float
+        Minimum cut value to scan.
+    max_cut : float
+        Maximum cut value to scan.
+    step : float
+        Step size for the scan.
+    base_cut : str, optional
+        Additional fixed selection applied before scanning.
+
+    Returns
+    -------
+    str
+        Report of the optimal cut value with corresponding S, B, and significance.
+    """
+
+    sig_df = ROOT.RDataFrame(tree_name, signal_file)
+    bkg_df = ROOT.RDataFrame(tree_name, background_file)
+
+    best_cut = None
+    best_sig = -1
+    best_S = 0
+    best_B = 0
+
+    cut_val = min_cut
+
+    while cut_val <= max_cut:
+
+        scan_cut = f"{variable} > {cut_val}"
+        if base_cut:
+            full_cut = f"({base_cut}) && ({scan_cut})"
+        else:
+            full_cut = scan_cut
+
+        S = sig_df.Filter(full_cut).Count().GetValue()
+        B = bkg_df.Filter(full_cut).Count().GetValue()
+
+        if (S + B) > 0:
+            significance = S / ((S + B) ** 0.5)
+        else:
+            significance = 0
+
+        if significance > best_sig:
+            best_sig = significance
+            best_cut = cut_val
+            best_S = S
+            best_B = B
+
+        cut_val += step
+
+    return (
+        f"Optimal cut found:\n"
+        f"{variable} > {best_cut}\n"
+        f"S = {best_S}, B = {best_B}\n"
+        f"Significance = {best_sig:.3f}"
+    )
