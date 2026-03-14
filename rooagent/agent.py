@@ -12,6 +12,8 @@ model = ChatOllama(model="gpt-oss:latest", temperature=0)
 
 # Register tools
 tools = [
+    list_root_file_contents,
+    list_tree_branches,
     get_histogram_stats,
     apply_cut_and_count,
     compute_significance,
@@ -19,13 +21,15 @@ tools = [
     compare_tree_variables,
     root_tree_to_csv,
     define_variable_and_plot,
-    fit_tree_variable, 
+    fit_tree_variable,
     fit_histogram,
     draw_histograms_same_canvas,
     draw_2d_histogram,
     find_optimal_cut,
     draw_1d_histogram,
-    save_tree_variable,
+    define_variable,
+    draw_2d_histogram_from_tree,
+    generate_cutflow,
 ]
 
 # Map tool names to tool objects

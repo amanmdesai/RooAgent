@@ -400,3 +400,63 @@ def draw_2d_histogram(
     f.Close()
 
     return f"Saved 2D histogram to {output_pdf}"
+
+
+@tool
+def draw_2d_histogram_from_tree(
+    file_path: str,
+    tree_name: str,
+    x_branch: str,
+    y_branch: str,
+    output_pdf: str,
+    bins_x: int = 50,
+    xmin: float = 0,
+    xmax: float = 100,
+    bins_y: int = 50,
+    ymin: float = 0,
+    ymax: float = 100,
+    xlabel: str = "",
+    ylabel: str = "",
+    color_palette: int = 55
+) -> str:
+    """
+    Draw a 2D histogram from two branches of a TTree and save as a PDF.
+    """
+
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return f"Error: Could not open file {file_path}"
+
+    tree = f.Get(tree_name)
+    if not tree:
+        f.Close()
+        return f"Error: TTree {tree_name} not found in {file_path}"
+
+    h2 = ROOT.TH2F(
+        "h2",
+        "",
+        bins_x, xmin, xmax,
+        bins_y, ymin, ymax
+    )
+
+    tree.Draw(
+        f"{y_branch}:{x_branch} >> h2",
+        "",
+        "goff"
+    )
+
+    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
+
+    h2.GetXaxis().SetTitle(xlabel if xlabel else x_branch)
+    h2.GetYaxis().SetTitle(ylabel if ylabel else y_branch)
+
+    ROOT.gStyle.SetPalette(color_palette)
+
+    h2.Draw("COLZ")
+
+    canv.Update()
+    canv.SaveAs(output_pdf)
+
+    f.Close()
+
+    return f"Saved 2D histogram ({y_branch} vs {x_branch}) to {output_pdf}"
