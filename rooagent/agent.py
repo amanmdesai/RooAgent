@@ -30,6 +30,8 @@ tools = [
     define_variable,
     draw_2d_histogram_from_tree,
     generate_cutflow,
+    discover_root_data,
+    list_ttrees,
 ]
 
 # Map tool names to tool objects
