@@ -2,29 +2,6 @@ from typing import List
 import ROOT
 from langchain_core.tools import tool
 
-# ================= ROOT STYLE =================
-ROOT.gStyle.SetOptStat(0)
-
-ROOT.gStyle.SetTitleFont(42, "XYZ")
-ROOT.gStyle.SetLabelFont(42, "XYZ")
-
-ROOT.gStyle.SetTitleSize(0.05, "XYZ")
-ROOT.gStyle.SetLabelSize(0.04, "XYZ")
-
-ROOT.gStyle.SetPadLeftMargin(0.12)
-ROOT.gStyle.SetPadBottomMargin(0.12)
-
-ROOT.gStyle.SetLegendBorderSize(0)
-ROOT.gStyle.SetLegendFillColor(0)
-
-ROOT.gStyle.SetFrameLineWidth(2)
-ROOT.gStyle.SetLineWidth(2)
-
-ROOT.gStyle.SetPadGridX(False)
-ROOT.gStyle.SetPadGridY(False)
-
-# ================= SINGLE VARIABLE =================
-
 
 # ================= DRAW SINGLE 1D HISTOGRAM =================
 @tool
@@ -156,7 +133,7 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
 
 # ================= COMPARE TREE VARIABLES =================
 @tool
-def compare_tree_variables(file_paths: List[str], tree_names: List[str],
+def compare_tree_variables(file_paths: List[str], tree_name: str,
                            variables: List[str], bins: int, xmin: float, xmax: float,
                            legends: List[str], output_pdf: str,
                            normalize: bool = False) -> str:
@@ -167,8 +144,8 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
     ----------
     file_paths : List[str]
         List of paths to ROOT files containing the TTrees.
-    tree_names : List[str]
-        List of TTree names corresponding to each ROOT file.
+    tree_name : str
+        Name of TTree name corresponding to ROOT file.
     variables : List[str]
         List of variable names to histogram from each TTree.
     bins : int
@@ -194,8 +171,8 @@ def compare_tree_variables(file_paths: List[str], tree_names: List[str],
     colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
     hist_list = []
 
-    for i, (fpath, tname, var, label) in enumerate(zip(file_paths, tree_names, variables, legends)):
-        df = ROOT.RDataFrame(tname, fpath)
+    for i, (fpath, var, label) in enumerate(zip(file_paths, variables, legends)):
+        df = ROOT.RDataFrame(tree_name, fpath)
         hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
@@ -241,7 +218,7 @@ def draw_histograms_same_canvas(
 ) -> str:
     """
     Compare ROOT histograms from different ROOT files on the same canvas
-    and save the resulting plot to a PDF file with professional styling.
+    and save the resulting plot to a PDF file with academic styling.
 
     Parameters
     ----------

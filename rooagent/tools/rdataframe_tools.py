@@ -7,7 +7,7 @@ from .utils import *
 
 @tool
 def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
-                        vector_mode: str = "any",
+                        vector_mode: str = "all",
                         weight: Optional[str] = None) -> str:
     """
     Apply a selection cut to a ROOT TTree and count the number of events passing the cut.
@@ -54,7 +54,7 @@ def compute_significance(signal_file: str,
                          background_file: str,
                          tree_name: str,
                          cut: str,
-                         vector_mode: str = "any",
+                         vector_mode: str = "all",
                          weight: Optional[str] = None) -> str:
     """
     Compute the statistical significance S / sqrt(S + B) for a given selection cut.
@@ -154,7 +154,7 @@ def define_variable_and_plot(file_path: str, tree_name: str,
                              bins: int, xmin: float, xmax: float,
                              cuts: List[str],
                              output_file: str,
-                             vector_mode: str = "any",
+                             vector_mode: str = "all",
                              weight: Optional[str] = None) -> str:
     """
     Define new variables in a ROOT TTree, apply selection cuts, and plot a 1D histogram.
@@ -241,7 +241,7 @@ def find_optimal_cut(signal_file: str,
                      max_cut: float,
                      step: float,
                      base_cut: str = "",
-                     vector_mode: str = "any",
+                     vector_mode: str = "all",
                      weight: Optional[str] = None) -> str:
     """
     Scan a cut on a variable and find the value that maximizes S/sqrt(S+B).
