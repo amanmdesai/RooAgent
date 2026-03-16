@@ -80,7 +80,7 @@ Prioritize scientific rigor, correctness, reproducibility, and proper use of ana
 # Initialize Model
 # -----------------------------
 model = ChatOllama(
-    model="qwen3.5:latest",
+    model="gpt-oss:latest",
     temperature=0,
     checkpointer=InMemorySaver(),
 )
