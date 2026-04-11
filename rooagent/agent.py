@@ -1,10 +1,11 @@
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
 from typing_extensions import TypedDict, Annotated
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import InMemorySaver  
 import operator
+import os
 # Import all tools
 from .tools import *
 
@@ -28,12 +29,12 @@ Prioritize correctness, efficiency, reproducibility.
 """
 
 # -----------------------------
-# Initialize Model
+# Initialize Model (GitHub Copilot / GitHub Models API)
 # -----------------------------
-model = ChatOllama(
-    model="gpt-oss:20b",
-    temperature=0,
-    checkpointer=InMemorySaver(),
+model = ChatOpenAI(
+    model="gpt-4o",
+    api_key=os.getenv("GITHUB_TOKEN"),
+    base_url="https://models.inference.ai.azure.com"
 )
 
 # Bind tools
@@ -131,7 +132,7 @@ agent = builder.compile()
 # CLI
 # -----------------------------
 def main():
-    print("\nROOT Physics Analysis Agent")
+    print("\nROOT Physics Analysis Agent (GPT-4o via GitHub Models)")
     print("Type 'exit' to quit\n")
 
     state = {"messages": [], "llm_calls": 0}
@@ -147,12 +148,3 @@ def main():
         state["messages"].append(HumanMessage(content=user_input))
 
         state = agent.invoke(state)
-
-        print("\n--- Conversation Trace ---\n")
-        for m in state["messages"]:
-            m.pretty_print()
-        print("\n--------------------------\n")
-
-
-if __name__ == "__main__":
-    main()
