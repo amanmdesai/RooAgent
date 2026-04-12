@@ -27,13 +27,13 @@ RULES: Always use tools; verify outputs; no assumptions; clear error messages.
 # -----------------------------
 # Initialize Model (GitHub Copilot / GitHub Models API)
 # -----------------------------
-DEFAULT_MODEL_NAME = "gpt-4o-mini"
+DEFAULT_MODEL_NAME = "openai/gpt-4o-mini"
 MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
 
 model = ChatOpenAI(
     model=MODEL_NAME,
     api_key=os.getenv("GITHUB_TOKEN"),
-    base_url="https://models.inference.ai.azure.com"
+    base_url="https://models.github.ai/inference"
 )
 
 # Bind tools

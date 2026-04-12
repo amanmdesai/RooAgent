@@ -160,10 +160,31 @@ def draw_1d_histogram(
     line_color: int = ROOT.kBlue+1
 ) -> str:
     """
-    Draw a 1D histogram from a ROOT file and save it to PDF.
+    Draw a 1D histogram stored in a ROOT file and save it as a PDF.
 
-    Supports axis labels, optional log-y scaling, and optional normalization
-    to unit area before drawing.
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the histogram.
+    hist_name : str
+        Name of the TH1 histogram to draw.
+    output_pdf : str
+        Output PDF path for the rendered plot.
+    xlabel : str, optional
+        X-axis title.
+    ylabel : str, optional
+        Y-axis title (default: "Events").
+    logy : bool, optional
+        If True, draw using logarithmic Y scale.
+    normalize : bool, optional
+        If True, scale histogram to unit integral when possible.
+    line_color : int, optional
+        ROOT color code used for histogram line styling.
+
+    Returns
+    -------
+    str
+        Status message with either an error or the saved output path.
     """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -208,10 +229,31 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        output_pdf: str,
                        normalize: bool = False) -> str:
     """
-    Plot one TTree variable as a 1D histogram and save to PDF.
+    Build and draw a 1D histogram from a TTree branch.
 
-    The histogram range is controlled by bins/xmin/xmax and can be normalized
-    to compare shape differences across samples.
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the source tree.
+    tree_name : str
+        Name of the TTree to read.
+    variable : str
+        Branch/expression to histogram.
+    bins : int
+        Number of bins.
+    xmin : float
+        Histogram lower edge.
+    xmax : float
+        Histogram upper edge.
+    output_pdf : str
+        Output PDF path.
+    normalize : bool, optional
+        If True, normalize histogram to unit integral.
+
+    Returns
+    -------
+    str
+        Status message with saved output location.
     """
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
@@ -241,10 +283,35 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
                            normalize: bool = False,
                            show_ratio: bool = False) -> str:
     """
-    Overlay variables from multiple ROOT files/trees on one canvas.
+    Compare multiple tree-variable distributions on one canvas.
 
-    Inputs are paired by index: file_paths[i], variables[i], legends[i].
-    Optionally normalizes each histogram and draws a ratio panel.
+    Parameters
+    ----------
+    file_paths : List[str]
+        ROOT files to read from.
+    tree_name : str
+        Common TTree name used in each file.
+    variables : List[str]
+        Variable/expression per input file.
+    bins : int
+        Number of bins for all histograms.
+    xmin : float
+        Shared lower range edge.
+    xmax : float
+        Shared upper range edge.
+    legends : List[str]
+        Legend labels aligned by index with inputs.
+    output_pdf : str
+        Output PDF path.
+    normalize : bool, optional
+        If True, normalize each histogram before drawing.
+    show_ratio : bool, optional
+        If True, draw a ratio panel using the first histogram as reference.
+
+    Returns
+    -------
+    str
+        Status message indicating success or validation errors.
     """
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
@@ -307,10 +374,49 @@ def plot_signal_vs_backgrounds(
     show_ratio: bool = False
 ) -> str:
     """
-    Plot HEP-style overlays for signal, backgrounds, and optional data.
+    Plot signal, backgrounds, and optional data using HEP-style conventions.
 
-    Visual convention: backgrounds are filled, signals are line-only, and data
-    is drawn with markers+errors. Supports multiple signal/background files.
+    Parameters
+    ----------
+    signal_file : str
+        Primary signal ROOT file. Can also be comma-separated list.
+    background_files : List[str]
+        One or more background ROOT files.
+    tree_name : str
+        TTree name available in all files.
+    variable : str
+        Variable/expression to histogram.
+    bins : int
+        Number of bins.
+    xmin : float
+        Lower histogram range edge.
+    xmax : float
+        Upper histogram range edge.
+    output_pdf : str
+        Output PDF path.
+    signal_label : str, optional
+        Default label for single-signal mode.
+    signal_files : List[str], optional
+        Additional signal files for multi-signal overlays.
+    signal_labels : List[str], optional
+        Labels for signal samples.
+    background_labels : List[str], optional
+        Labels for background samples.
+    data_file : str, optional
+        ROOT file used as data-like sample.
+    data_label : str, optional
+        Legend label for data sample.
+    plot_data : bool, optional
+        If True, require data_file and draw it with markers.
+    normalize : bool, optional
+        If True, normalize all histograms to unit area when possible.
+    show_ratio : bool, optional
+        If True, draw signal/(sum backgrounds) ratio panel.
+
+    Returns
+    -------
+    str
+        Status message with output path or input validation error.
     """
     signal_paths = _parse_file_inputs(signal_file, signal_files)
     if not signal_paths:
@@ -453,10 +559,33 @@ def draw_histograms_same_canvas(
     show_ratio: bool = False
 ) -> str:
     """
-    Draw existing histograms from multiple ROOT files on a shared canvas.
+    Overlay existing histograms from multiple ROOT files on one canvas.
 
-    Histogram names and legend labels are matched by index. Supports optional
-    normalization, log-y rendering, and a ratio panel.
+    Parameters
+    ----------
+    file_paths : List[str]
+        ROOT files containing input histograms.
+    hist_names : List[str]
+        Histogram names aligned with file_paths.
+    legends : List[str]
+        Legend labels aligned with file_paths.
+    output_pdf : str
+        Output PDF path.
+    xlabel : str, optional
+        X-axis title override. If empty, uses histogram axis title.
+    ylabel : str, optional
+        Y-axis title.
+    logy : bool, optional
+        If True, use logarithmic Y axis.
+    normalize : bool, optional
+        If True, normalize each histogram before drawing.
+    show_ratio : bool, optional
+        If True, draw a ratio panel (relative to first histogram).
+
+    Returns
+    -------
+    str
+        Status message reporting success or input/data errors.
     """
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
@@ -526,10 +655,29 @@ def draw_2d_histogram(
     normalize: bool = False
 ) -> str:
     """
-    Draw a 2D histogram from a ROOT file and save to PDF.
+    Draw a 2D histogram from a ROOT file and save it as a PDF.
 
-    Allows custom axis labels, ROOT color palette selection, and optional
-    normalization to unit integral.
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the TH2 histogram.
+    hist_name : str
+        Histogram name.
+    output_pdf : str
+        Output PDF path.
+    xlabel : str, optional
+        X-axis title.
+    ylabel : str, optional
+        Y-axis title.
+    color_palette : int, optional
+        ROOT palette index used for COLZ drawing.
+    normalize : bool, optional
+        If True, scale histogram to unit integral.
+
+    Returns
+    -------
+    str
+        Status message with saved output or error details.
     """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -585,10 +733,43 @@ def draw_2d_histogram_from_tree(
     color_palette: int = 55
 ) -> str:
     """
-    Build and draw a 2D histogram directly from two TTree branches.
+    Build a 2D histogram from two tree branches and save a COLZ plot.
 
-    Uses explicit x/y binning and ranges, then saves a COLZ-style plot to PDF
-    with optional custom axis labels and palette.
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file.
+    tree_name : str
+        TTree to read.
+    x_branch : str
+        Branch/expression used for x-axis.
+    y_branch : str
+        Branch/expression used for y-axis.
+    output_pdf : str
+        Output PDF path.
+    bins_x : int, optional
+        Number of x bins.
+    xmin : float, optional
+        X range minimum.
+    xmax : float, optional
+        X range maximum.
+    bins_y : int, optional
+        Number of y bins.
+    ymin : float, optional
+        Y range minimum.
+    ymax : float, optional
+        Y range maximum.
+    xlabel : str, optional
+        X-axis title override.
+    ylabel : str, optional
+        Y-axis title override.
+    color_palette : int, optional
+        ROOT palette index.
+
+    Returns
+    -------
+    str
+        Status message with saved output or an input/file error.
     """
 
     f = ROOT.TFile.Open(file_path)
