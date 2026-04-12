@@ -86,6 +86,15 @@ def _parse_file_inputs(
     return list(dict.fromkeys(parsed))
 
 
+def _resolve_weight_branch(df, weight_branch: str) -> str:
+    """Return a valid weight branch name for a dataframe, or empty if unavailable."""
+    if not weight_branch:
+        return ""
+
+    columns = [str(c) for c in df.GetColumnNames()]
+    return weight_branch if weight_branch in columns else ""
+
+
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str, ratio_hists: List = None):
     if lower_pad is None:
         return
@@ -125,6 +134,7 @@ def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
         draw_pad.SetLogy(True)
 
     max_val = max(h.GetMaximum() for h in hist_list)
+    prepared_draws = []
     for i, hist in enumerate(hist_list):
         hist.SetMaximum(max_val * (15.0 if logy else 1.35))
         hist.GetXaxis().SetTitle(x_title)
@@ -135,7 +145,25 @@ def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
             hist.GetYaxis().SetTitleSize(0.055)
             hist.GetYaxis().SetLabelSize(0.045)
         draw_option = draw_options[i] if draw_options and i < len(draw_options) else ("HIST" if i == 0 else "HIST SAME")
-        hist.Draw(draw_option)
+        prepared_draws.append((hist, draw_option))
+
+    # Draw filled/line histograms first, then marker-style overlays (e.g. data) on top.
+    non_overlay_draws = []
+    marker_overlay_draws = []
+    for hist, draw_option in prepared_draws:
+        opt = draw_option.upper()
+        is_marker_overlay = ("HIST" not in opt) and (("E" in opt) or ("P" in opt))
+        if is_marker_overlay:
+            marker_overlay_draws.append((hist, draw_option))
+        else:
+            non_overlay_draws.append((hist, draw_option))
+
+    draw_sequence = non_overlay_draws + marker_overlay_draws
+    for i, (hist, draw_option) in enumerate(draw_sequence):
+        option = draw_option
+        if i > 0 and "SAME" not in option.upper():
+            option = f"{option} SAME"
+        hist.Draw(option)
 
     legend.SetFillStyle(0)
     legend.Draw()
@@ -159,33 +187,7 @@ def draw_1d_histogram(
     normalize: bool = False,
     line_color: int = ROOT.kBlue+1
 ) -> str:
-    """
-    Draw a 1D histogram stored in a ROOT file and save it as a PDF.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the histogram.
-    hist_name : str
-        Name of the TH1 histogram to draw.
-    output_pdf : str
-        Output PDF path for the rendered plot.
-    xlabel : str, optional
-        X-axis title.
-    ylabel : str, optional
-        Y-axis title (default: "Events").
-    logy : bool, optional
-        If True, draw using logarithmic Y scale.
-    normalize : bool, optional
-        If True, scale histogram to unit integral when possible.
-    line_color : int, optional
-        ROOT color code used for histogram line styling.
-
-    Returns
-    -------
-    str
-        Status message with either an error or the saved output path.
-    """
+    """Draw a 1D histogram stored in a ROOT file and save as PDF."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: Could not open file {file_path}"
@@ -227,36 +229,15 @@ def draw_1d_histogram(
 def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
                        output_pdf: str,
-                       normalize: bool = False) -> str:
-    """
-    Build and draw a 1D histogram from a TTree branch.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the source tree.
-    tree_name : str
-        Name of the TTree to read.
-    variable : str
-        Branch/expression to histogram.
-    bins : int
-        Number of bins.
-    xmin : float
-        Histogram lower edge.
-    xmax : float
-        Histogram upper edge.
-    output_pdf : str
-        Output PDF path.
-    normalize : bool, optional
-        If True, normalize histogram to unit integral.
-
-    Returns
-    -------
-    str
-        Status message with saved output location.
-    """
+                       normalize: bool = False,
+                       weight_branch: str = "") -> str:
+    """Build and draw a 1D histogram from a TTree branch, with optional event weights, and save as PDF."""
     df = ROOT.RDataFrame(tree_name, file_path)
-    hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
+    resolved_weight = _resolve_weight_branch(df, weight_branch)
+    if resolved_weight:
+        hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable, resolved_weight)
+    else:
+        hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
     h = hist_ptr.GetValue()
     ROOT.SetOwnership(h, False)
     
@@ -281,38 +262,9 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
                            variables: List[str], bins: int, xmin: float, xmax: float,
                            legends: List[str], output_pdf: str,
                            normalize: bool = False,
-                           show_ratio: bool = False) -> str:
-    """
-    Compare multiple tree-variable distributions on one canvas.
-
-    Parameters
-    ----------
-    file_paths : List[str]
-        ROOT files to read from.
-    tree_name : str
-        Common TTree name used in each file.
-    variables : List[str]
-        Variable/expression per input file.
-    bins : int
-        Number of bins for all histograms.
-    xmin : float
-        Shared lower range edge.
-    xmax : float
-        Shared upper range edge.
-    legends : List[str]
-        Legend labels aligned by index with inputs.
-    output_pdf : str
-        Output PDF path.
-    normalize : bool, optional
-        If True, normalize each histogram before drawing.
-    show_ratio : bool, optional
-        If True, draw a ratio panel using the first histogram as reference.
-
-    Returns
-    -------
-    str
-        Status message indicating success or validation errors.
-    """
+                           show_ratio: bool = False,
+                           weight_branch: str = "") -> str:
+    """Compare multiple TTree variable distributions overlaid on one canvas, with optional event weights."""
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
 
@@ -322,7 +274,11 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
 
     for i, (fpath, var, label) in enumerate(zip(file_paths, variables, legends)):
         df = ROOT.RDataFrame(tree_name, fpath)
-        hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var)
+        resolved_weight = _resolve_weight_branch(df, weight_branch)
+        if resolved_weight:
+            hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var, resolved_weight)
+        else:
+            hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
         h.SetDirectory(0)
@@ -371,52 +327,20 @@ def plot_signal_vs_backgrounds(
     data_label: str = "Data",
     plot_data: bool = False,
     normalize: bool = False,
-    show_ratio: bool = False
+    show_ratio: bool = False,
+    weight_branch: str = ""
 ) -> str:
-    """
-    Plot signal, backgrounds, and optional data using HEP-style conventions.
+    """Plot signal, backgrounds, and optional data in HEP style with optional event weights.
 
-    Parameters
-    ----------
-    signal_file : str
-        Primary signal ROOT file. Can also be comma-separated list.
-    background_files : List[str]
-        One or more background ROOT files.
-    tree_name : str
-        TTree name available in all files.
-    variable : str
-        Variable/expression to histogram.
-    bins : int
-        Number of bins.
-    xmin : float
-        Lower histogram range edge.
-    xmax : float
-        Upper histogram range edge.
-    output_pdf : str
-        Output PDF path.
-    signal_label : str, optional
-        Default label for single-signal mode.
-    signal_files : List[str], optional
-        Additional signal files for multi-signal overlays.
-    signal_labels : List[str], optional
-        Labels for signal samples.
-    background_labels : List[str], optional
-        Labels for background samples.
-    data_file : str, optional
-        ROOT file used as data-like sample.
-    data_label : str, optional
-        Legend label for data sample.
-    plot_data : bool, optional
-        If True, require data_file and draw it with markers.
-    normalize : bool, optional
-        If True, normalize all histograms to unit area when possible.
-    show_ratio : bool, optional
-        If True, draw signal/(sum backgrounds) ratio panel.
+    Stacking behaviour:
+      - With data (and normalize=False): backgrounds are stacked first, then signals stacked on
+        top (hatched fill to distinguish from backgrounds). Data is drawn last as black
+        filled-circle markers (PE1) — it is never part of the stack.
+        Ratio panel shows Data / total-MC (backgrounds + signal).
+      - Without data (or normalize=True): all processes are drawn as overlaid line histograms
+        with no stacking. Ratio panel shows Signal / Background.
 
-    Returns
-    -------
-    str
-        Status message with output path or input validation error.
+    Legend order: data -> signal (reverse stack) -> backgrounds (reverse stack).
     """
     signal_paths = _parse_file_inputs(signal_file, signal_files)
     if not signal_paths:
@@ -445,103 +369,219 @@ def plot_signal_vs_backgrounds(
     if wants_data and not data_file.strip():
         return "Error: data_file must be provided when plot_data is True."
 
-    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
-    legend.SetFillStyle(0)
-    legend.SetBorderSize(0)
-
-    signal_line_colors = [ROOT.kBlack, ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kMagenta + 1, ROOT.kGreen + 2, ROOT.kOrange + 7]
+    signal_line_colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+    # Hatched fill styles for signal in the stack (distinguishable from solid background fills)
+    signal_hatch_styles = [3345, 3354, 3395, 3444, 3490]
     background_fill_colors = [ROOT.kAzure - 9, ROOT.kOrange - 2, ROOT.kSpring - 6, ROOT.kPink - 8, ROOT.kViolet - 6, ROOT.kCyan - 6]
 
-    hist_list = []
-    draw_options: List[str] = []
-    signal_hists = []
     background_hists = []
+    signal_hists = []
+    data_hist = None
 
-    for i, (fpath, label) in enumerate(zip(background_paths, background_labels)):
+    # --- Build background histograms ---
+    for i, (fpath, _label) in enumerate(zip(background_paths, background_labels)):
         df = ROOT.RDataFrame(tree_name, fpath)
-        hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable)
+        resolved_weight = _resolve_weight_branch(df, weight_branch)
+        if resolved_weight:
+            hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
+        else:
+            hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
         h.SetDirectory(0)
-
-        if normalize and h.Integral() > 0:
-            h.Scale(1.0 / h.Integral())
-
         fill_color = background_fill_colors[i % len(background_fill_colors)]
         h.SetFillColor(fill_color)
-        h.SetLineColor(fill_color)
-        h.SetLineWidth(2)
-        h.SetLineStyle(1)
+        h.SetLineColor(ROOT.kBlack)
+        h.SetLineWidth(1)
         h.SetTitle("")
-        h.GetXaxis().SetTitle(variable)
-        h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
         background_hists.append(h)
-        hist_list.append(h)
-        draw_options.append("HIST" if len(draw_options) == 0 else "HIST SAME")
-        legend.AddEntry(h, label, "f")
 
-    for i, (fpath, label) in enumerate(zip(signal_paths, signal_labels)):
+    # --- Build signal histograms ---
+    for i, (fpath, _label) in enumerate(zip(signal_paths, signal_labels)):
         df = ROOT.RDataFrame(tree_name, fpath)
-        hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable)
+        resolved_weight = _resolve_weight_branch(df, weight_branch)
+        if resolved_weight:
+            hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
+        else:
+            hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
         h.SetDirectory(0)
-
-        if normalize and h.Integral() > 0:
-            h.Scale(1.0 / h.Integral())
-
         line_color = signal_line_colors[i % len(signal_line_colors)]
+        # Default style: line only (used when no data / normalize mode)
         h.SetFillStyle(0)
         h.SetLineColor(line_color)
-        h.SetLineWidth(4)
+        h.SetLineWidth(3)
         h.SetLineStyle(1 + (i % 4))
         h.SetTitle("")
-        h.GetXaxis().SetTitle(variable)
-        h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
         signal_hists.append(h)
-        hist_list.append(h)
-        draw_options.append("HIST" if len(draw_options) == 0 else "HIST SAME")
-        legend.AddEntry(h, label, "l")
 
+    # --- Build data histogram (pure overlay – never part of the stack) ---
     if wants_data:
         df = ROOT.RDataFrame(tree_name, data_file)
-        hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable)
+        resolved_weight = _resolve_weight_branch(df, weight_branch)
+        if resolved_weight:
+            hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable, resolved_weight)
+        else:
+            hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable)
         data_hist = hist_ptr.GetValue()
         ROOT.SetOwnership(data_hist, False)
         data_hist.SetDirectory(0)
-
-        if normalize and data_hist.Integral() > 0:
-            data_hist.Scale(1.0 / data_hist.Integral())
-
         data_hist.SetFillStyle(0)
-        data_hist.SetLineColor(ROOT.kBlack)
-        data_hist.SetMarkerColor(ROOT.kBlack)
         data_hist.SetMarkerStyle(20)
         data_hist.SetMarkerSize(1.0)
+        data_hist.SetMarkerColor(ROOT.kBlack)
+        data_hist.SetLineColor(ROOT.kBlack)
+        data_hist.SetLineWidth(1)
         data_hist.SetTitle("")
-        data_hist.GetXaxis().SetTitle(variable)
-        data_hist.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
-        hist_list.append(data_hist)
-        draw_options.append("E1" if len(draw_options) == 0 else "E1 SAME")
+
+    # --- Normalization ---
+    # When normalizing, stacking is not meaningful — switch all processes to line style.
+    y_title = "Normalized Events" if normalize else "Events"
+    if normalize:
+        for i, h in enumerate(background_hists):
+            if h.Integral() > 0:
+                h.Scale(1.0 / h.Integral())
+            h.SetFillStyle(0)
+            h.SetLineColor(background_fill_colors[i % len(background_fill_colors)])
+            h.SetLineWidth(2)
+        for h in signal_hists:
+            if h.Integral() > 0:
+                h.Scale(1.0 / h.Integral())
+        if data_hist and data_hist.Integral() > 0:
+            data_hist.Scale(1.0 / data_hist.Integral())
+
+    # Decide whether to use a stack: only when data is present and not normalizing.
+    use_stack = wants_data and not normalize
+
+    # When stacking, re-style signal histograms to use hatched fills (distinguishable from backgrounds).
+    if use_stack:
+        for i, h in enumerate(signal_hists):
+            line_color = signal_line_colors[i % len(signal_line_colors)]
+            h.SetFillStyle(signal_hatch_styles[i % len(signal_hatch_styles)])
+            h.SetFillColor(line_color)
+            h.SetLineColor(line_color)
+            h.SetLineWidth(2)
+            h.SetLineStyle(1)
+
+    # --- Legend: data first, then signal in reverse stack order, then backgrounds in reverse stack order ---
+    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
+    legend.SetFillStyle(0)
+    legend.SetBorderSize(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.035)
+    if data_hist:
         legend.AddEntry(data_hist, data_label, "lep")
+    sig_legend_opt = "f" if use_stack else "l"
+    for h, label in reversed(list(zip(signal_hists, signal_labels))):
+        legend.AddEntry(h, label, sig_legend_opt)
+    bkg_legend_opt = "l" if normalize else "f"
+    for h, label in reversed(list(zip(background_hists, background_labels))):
+        legend.AddEntry(h, label, bkg_legend_opt)
 
-    ratio_hist = _build_signal_background_ratio(signal_hists[0] if signal_hists else None, background_hists)
+    # --- Canvas and pads ---
+    canvas, upper_pad, lower_pad = _create_plot_pads("c_sig_bkg", "Signal vs Backgrounds", show_ratio)
+    draw_pad = upper_pad if upper_pad else canvas
+    draw_pad.cd()
 
-    result = _draw_overlay_plot(
-        hist_list=hist_list,
-        legend=legend,
-        output_pdf=output_pdf,
-        x_title=variable,
-        y_title="Normalized Events" if normalize else "Events",
-        canvas_name="c_sig_bkg",
-        canvas_title="Signal vs Backgrounds",
-        show_ratio=show_ratio,
-        ratio_hists=[ratio_hist] if show_ratio and ratio_hist is not None else None,
-        draw_options=draw_options,
-    )
-    if result == "No histograms created.":
-        return result
+    if not use_stack:
+        # Pure line overlay: no data present, or normalize=True
+        all_hists = background_hists + signal_hists + ([data_hist] if data_hist else [])
+        max_val = max(h.GetMaximum() for h in all_hists)
+        drawn = False
+        for h in background_hists:
+            h.GetXaxis().SetTitle(variable)
+            h.GetYaxis().SetTitle(y_title)
+            if show_ratio:
+                h.GetXaxis().SetLabelSize(0)
+                h.GetXaxis().SetTitleSize(0)
+                h.GetYaxis().SetTitleSize(0.055)
+                h.GetYaxis().SetLabelSize(0.045)
+            h.SetMaximum(max_val * 1.35)
+            h.Draw("HIST" if not drawn else "HIST SAME")
+            drawn = True
+        for h in signal_hists:
+            h.GetXaxis().SetTitle(variable)
+            h.GetYaxis().SetTitle(y_title)
+            if show_ratio:
+                h.GetXaxis().SetLabelSize(0)
+                h.GetXaxis().SetTitleSize(0)
+            h.Draw("HIST SAME" if drawn else "HIST")
+            drawn = True
+        if data_hist:
+            data_hist.GetXaxis().SetTitle(variable)
+            data_hist.GetYaxis().SetTitle(y_title)
+            data_hist.Draw("PE1 SAME" if drawn else "PE1")
+    else:
+        # Stacked MC (backgrounds first, then signal on top) + data overlay
+        stack = ROOT.THStack("hs_sig_bkg", "")
+        ROOT.SetOwnership(stack, False)
+        for h in background_hists:
+            stack.Add(h)
+        for h in signal_hists:
+            stack.Add(h)
 
+        stack.Draw("HIST")
+        # Axis titles must be set after the first Draw() for THStack
+        stack.GetXaxis().SetTitle(variable)
+        stack.GetYaxis().SetTitle(y_title)
+        if show_ratio:
+            stack.GetXaxis().SetLabelSize(0)
+            stack.GetXaxis().SetTitleSize(0)
+            stack.GetYaxis().SetTitleSize(0.055)
+            stack.GetYaxis().SetLabelSize(0.045)
+
+        stack_max = stack.GetMaximum()
+        data_max = data_hist.GetMaximum() if data_hist else 0.0
+        stack.SetMaximum(max(stack_max, data_max) * 1.35)
+
+        # Data is a pure overlay — drawn last, on top of everything
+        data_hist.Draw("PE1 SAME")
+
+    legend.SetFillStyle(0)
+    legend.Draw()
+
+    # --- Ratio panel ---
+    if show_ratio and lower_pad is not None:
+        # Build total MC denominator (bkg + signal when stacking, bkg-only otherwise)
+        all_mc = background_hists + (signal_hists if use_stack else [])
+        total_mc = all_mc[0].Clone("h_total_mc_for_ratio")
+        total_mc.SetDirectory(0)
+        ROOT.SetOwnership(total_mc, False)
+        for h in all_mc[1:]:
+            total_mc.Add(h)
+
+        if data_hist:
+            # Data/MC ratio: standard HEP publication convention
+            ratio = data_hist.Clone("h_data_mc_ratio")
+            ratio.SetDirectory(0)
+            ROOT.SetOwnership(ratio, False)
+            ratio.Divide(total_mc)
+            ratio_draw_opt = "PE1"
+            ratio_y_title = "Data/MC"
+        else:
+            # No data: Signal/Bkg
+            ratio = signal_hists[0].Clone("h_sig_bkg_ratio")
+            ratio.SetDirectory(0)
+            ROOT.SetOwnership(ratio, False)
+            ratio.Divide(total_mc)
+            ratio_draw_opt = "HIST"
+            ratio_y_title = "Sig/Bkg"
+
+        lower_pad.cd()
+        _style_ratio_hist(ratio, variable)
+        ratio.GetYaxis().SetTitle(ratio_y_title)
+        ratio.Draw(ratio_draw_opt)
+
+        x_axis = ratio.GetXaxis()
+        unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+        ROOT.SetOwnership(unity, False)
+        unity.SetLineStyle(2)
+        unity.SetLineColor(ROOT.kGray + 2)
+        unity.Draw()
+
+    canvas.Update()
+    canvas.SaveAs(output_pdf)
     return f"Saved signal-vs-background comparison to {output_pdf}"
 
 
@@ -558,35 +598,7 @@ def draw_histograms_same_canvas(
     normalize: bool = False,
     show_ratio: bool = False
 ) -> str:
-    """
-    Overlay existing histograms from multiple ROOT files on one canvas.
-
-    Parameters
-    ----------
-    file_paths : List[str]
-        ROOT files containing input histograms.
-    hist_names : List[str]
-        Histogram names aligned with file_paths.
-    legends : List[str]
-        Legend labels aligned with file_paths.
-    output_pdf : str
-        Output PDF path.
-    xlabel : str, optional
-        X-axis title override. If empty, uses histogram axis title.
-    ylabel : str, optional
-        Y-axis title.
-    logy : bool, optional
-        If True, use logarithmic Y axis.
-    normalize : bool, optional
-        If True, normalize each histogram before drawing.
-    show_ratio : bool, optional
-        If True, draw a ratio panel (relative to first histogram).
-
-    Returns
-    -------
-    str
-        Status message reporting success or input/data errors.
-    """
+    """Overlay existing histograms from multiple ROOT files on one canvas."""
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
 
@@ -654,31 +666,7 @@ def draw_2d_histogram(
     color_palette: int = 55,
     normalize: bool = False
 ) -> str:
-    """
-    Draw a 2D histogram from a ROOT file and save it as a PDF.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TH2 histogram.
-    hist_name : str
-        Histogram name.
-    output_pdf : str
-        Output PDF path.
-    xlabel : str, optional
-        X-axis title.
-    ylabel : str, optional
-        Y-axis title.
-    color_palette : int, optional
-        ROOT palette index used for COLZ drawing.
-    normalize : bool, optional
-        If True, scale histogram to unit integral.
-
-    Returns
-    -------
-    str
-        Status message with saved output or error details.
-    """
+    """Draw a 2D histogram from a ROOT file and save as PDF."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: Could not open file {file_path}"
@@ -732,45 +720,7 @@ def draw_2d_histogram_from_tree(
     ylabel: str = "",
     color_palette: int = 55
 ) -> str:
-    """
-    Build a 2D histogram from two tree branches and save a COLZ plot.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file.
-    tree_name : str
-        TTree to read.
-    x_branch : str
-        Branch/expression used for x-axis.
-    y_branch : str
-        Branch/expression used for y-axis.
-    output_pdf : str
-        Output PDF path.
-    bins_x : int, optional
-        Number of x bins.
-    xmin : float, optional
-        X range minimum.
-    xmax : float, optional
-        X range maximum.
-    bins_y : int, optional
-        Number of y bins.
-    ymin : float, optional
-        Y range minimum.
-    ymax : float, optional
-        Y range maximum.
-    xlabel : str, optional
-        X-axis title override.
-    ylabel : str, optional
-        Y-axis title override.
-    color_palette : int, optional
-        ROOT palette index.
-
-    Returns
-    -------
-    str
-        Status message with saved output or an input/file error.
-    """
+    """Build a 2D histogram from two TTree branches and save a COLZ plot."""
 
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():

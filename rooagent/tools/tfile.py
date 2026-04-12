@@ -4,20 +4,7 @@ import ROOT
 
 @tool
 def list_root_file_contents(file_path: str) -> str:
-    """
-    List all objects stored inside a ROOT file.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file.
-
-    Returns
-    -------
-    str
-        A formatted list of all objects found in the ROOT file including
-        TTrees, histograms, directories, and other ROOT objects.
-    """
+    """List all objects (TTrees, histograms, directories) stored in a ROOT file."""
 
     f = ROOT.TFile.Open(file_path)
 
@@ -64,21 +51,7 @@ def list_ttrees(file_path: str) -> str:
 
 @tool
 def list_tree_branches(file_path: str, tree_name: str) -> str:
-    """
-    List all branches and their types in a ROOT TTree.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree.
-
-    Returns
-    -------
-    str
-        A formatted list of branch names and types in the tree.
-    """
+    """List all branches and their types in a ROOT TTree."""
 
     f = ROOT.TFile.Open(file_path)
 
@@ -117,23 +90,7 @@ import os
 
 @tool
 def discover_root_data() -> str:
-    """
-    Discover ROOT files and TTrees available in the current directory.
-
-    This tool searches the working directory for ROOT files (*.root).
-    For each ROOT file found, it lists all TTrees contained in the file.
-
-    If a file contains only one TTree, it can be safely assumed as the
-    default tree for analysis.
-
-    Returns
-    -------
-    str
-        A formatted report listing:
-        - ROOT files found in the directory
-        - TTrees inside each file
-        - Suggested default tree if only one is present
-    """
+    """Discover ROOT files and TTrees available in the current working directory."""
 
     root_files = [f for f in os.listdir(".") if f.endswith(".root")]
 

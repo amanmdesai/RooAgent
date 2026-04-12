@@ -5,22 +5,7 @@ from langchain_core.tools import tool
 
 @tool
 def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output_csv: str, max_vector_size: int = 5) -> str:
-    """
-    Convert ROOT TTree to CSV, flattening vector branches.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to ROOT file.
-    tree_name : str
-        Name of TTree.
-    branches : List[str]
-        Branches to extract (scalar or vector).
-    output_csv : str
-        Output CSV file path.
-    max_vector_size : int
-        Max number of elements for vector branches (columns will be suffixed _0, _1, ...).
-    """
+    """Convert ROOT TTree branches to CSV, flattening vector branches with _0, _1, ... suffixes."""
     df = ROOT.RDataFrame(tree_name, file_path)
     data = df.AsNumpy(branches)
 

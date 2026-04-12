@@ -65,33 +65,7 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "all",
                         weight: Optional[str] = None,
                         file_paths: Optional[List[str]] = None) -> str:
-    """
-    Apply a selection cut to a ROOT TTree and count the number of events passing the cut.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree inside the ROOT file.
-    cut : str
-        Selection string (e.g., "pt > 20 && abs(eta) < 2.5") to filter events.
-    vector_mode options:
-        "any" -> event passes if any object satisfies the cut
-        "all" -> event passes if all objects satisfy the cut
-    weight : str, optional
-        Name of the branch containing event weights. If provided, the tool
-        returns the sum of weights for events passing the cut instead of
-        the raw event count.
-    file_paths : list of str, optional
-        Additional ROOT file paths to merge with file_path for counting.
-
-    Returns
-    -------
-    str
-        A message reporting the number of events (or weighted events)
-        passing the cut.
-    """
+    """Apply a selection cut to a TTree and count passing events. vector_mode 'any'=any object passes, 'all'=all objects pass."""
 
     paths = _parse_background_inputs(file_path, file_paths)
     if not paths:
@@ -116,36 +90,7 @@ def compute_significance(signal_file: str,
                          vector_mode: str = "all",
                          weight: Optional[str] = None,
                          background_files: Optional[List[str]] = None) -> str:
-    """
-    Compute the statistical significance S / sqrt(S + B) for a given selection cut.
-
-    Parameters
-    ----------
-    signal_file : str
-        Path to the ROOT file containing the signal TTree.
-    background_file : str
-        Path to the ROOT file containing one background TTree.
-        Can also be a comma-separated list of files.
-    tree_name : str
-        Name of the TTree in both files.
-    cut : str
-        Selection string to filter events for both signal and background.
-    vector_mode options:
-        "any" -> event passes if any object satisfies the cut
-        "all" -> event passes if all objects satisfy the cut
-    weight : str, optional
-        Name of the branch containing event weights. If provided, the
-        significance will be computed using weighted yields.
-    background_files : list of str, optional
-        Additional background ROOT files. If provided, all files are merged
-        and treated as total background.
-
-    Returns
-    -------
-    str
-        A message reporting the number of signal (S) and background (B)
-        events passing the cut and the computed significance.
-    """
+    """Compute S/sqrt(S+B) significance for a selection cut. vector_mode 'any'/'all' for vector branches."""
 
     vector_vars = get_vector_branches(signal_file, tree_name)
     cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
@@ -179,27 +124,7 @@ def define_variable(
     expression: str,
     save_file: Optional[str] = None
 ) -> str:
-    """
-    Define a new variable in a ROOT TTree using RDataFrame and save it.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree to modify.
-    new_var_name : str
-        Name of the new variable to define.
-    expression : str
-        Expression used to compute the new variable.
-    save_file : str, optional
-        Output ROOT file path. If None, a new file with suffix '_updated.root' is created.
-
-    Returns
-    -------
-    str
-        Confirmation message with the new variable added.
-    """
+    """Define a new variable in a TTree via RDataFrame and save to a ROOT file."""
 
     rdf = ROOT.RDataFrame(tree_name, file_path)
 
@@ -224,41 +149,7 @@ def define_variable_and_plot(file_path: str, tree_name: str,
                              output_file: str,
                              vector_mode: str = "all",
                              weight: Optional[str] = None) -> str:
-    """
-    Define new variables in a ROOT TTree, apply selection cuts, and plot a 1D histogram.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree inside the ROOT file.
-    new_variables : dict
-        Dictionary of variable definitions to add to the TTree.
-    variable_to_plot : str
-        Name of the variable to histogram after cuts.
-    bins : int
-        Number of bins in the histogram.
-    xmin : float
-        Lower edge of the histogram.
-    xmax : float
-        Upper edge of the histogram.
-    cuts : list of str
-        List of selection cuts to apply sequentially.
-    output_file : str
-        Path to save the resulting histogram.
-    vector_mode options:
-        "any" -> event passes if any object satisfies the cut
-        "all" -> event passes if all objects satisfy the cut
-    weight : str, optional
-        Name of the branch containing event weights. If provided,
-        the histogram will be filled using weighted events.
-
-    Returns
-    -------
-    str
-        Confirmation message indicating where the histogram was saved.
-    """
+    """Define new TTree variables, apply sequential cuts, and save a 1D histogram plot."""
 
     df = ROOT.RDataFrame(tree_name, file_path)
     vector_vars = get_vector_branches(file_path, tree_name)
@@ -312,44 +203,7 @@ def find_optimal_cut(signal_file: str,
                      vector_mode: str = "all",
                      weight: Optional[str] = None,
                      background_files: Optional[List[str]] = None) -> str:
-    """
-    Scan a cut on a variable and find the value that maximizes S/sqrt(S+B).
-
-    Parameters
-    ----------
-    signal_file : str
-        ROOT file containing the signal TTree.
-    background_file : str
-        ROOT file containing one background TTree.
-        Can also be a comma-separated list of files.
-    tree_name : str
-        Name of the TTree in both files.
-    variable : str
-        Variable to scan.
-    min_cut : float
-        Minimum cut value to scan.
-    max_cut : float
-        Maximum cut value to scan.
-    step : float
-        Step size for the scan.
-    base_cut : str, optional
-        Additional fixed selection applied before scanning.
-    vector_mode options:
-        "any" -> event passes if any object satisfies the cut
-        "all" -> event passes if all objects satisfy the cut
-    weight : str, optional
-        Name of the branch containing event weights. If provided,
-        the scan uses weighted event yields for S and B.
-    background_files : list of str, optional
-        Additional background ROOT files. If provided, all files are merged
-        and treated as total background.
-
-    Returns
-    -------
-    str
-        Report of the optimal cut value with corresponding S, B,
-        and significance.
-    """
+    """Scan a variable cut range to find the value maximizing S/sqrt(S+B) significance."""
 
     bkg_paths = _parse_background_inputs(background_file, background_files)
     if not bkg_paths:
@@ -410,33 +264,7 @@ def generate_cutflow(
     weight: Optional[str] = None,
     file_paths: Optional[List[str]] = None
 ) -> str:
-    """
-    Generate a cutflow table by sequentially applying cuts to a ROOT TTree.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree.
-    cuts : list of str
-        List of selection cuts applied sequentially.
-    vector_mode : str
-        How vector branches are handled:
-        "any" -> event passes if any object satisfies the cut
-        "all" -> event passes if all objects satisfy the cut
-    weight : str, optional
-        Name of the branch containing event weights. If provided,
-        weighted yields will be reported.
-    file_paths : list of str, optional
-        Additional ROOT files to merge with file_path before applying cuts.
-
-    Returns
-    -------
-    str
-        A formatted cutflow table showing the number of events
-        remaining after each selection.
-    """
+    """Generate a cutflow table by sequentially applying cuts to a TTree."""
 
     paths = _parse_background_inputs(file_path, file_paths)
     if not paths:
