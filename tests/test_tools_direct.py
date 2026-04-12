@@ -14,6 +14,7 @@ from rooagent.tools.rdataframe_tools import (  # noqa: E402
     generate_cutflow,
 )
 from rooagent.tools.plot_tools import (  # noqa: E402
+    _build_signal_background_ratio,
     compare_tree_variables,
     draw_1d_histogram,
     draw_2d_histogram,
@@ -226,6 +227,15 @@ def _discover_range(file_path: Path, tree_name: str, branch: str):
 
     pad = 0.05 * (max_val - min_val)
     return min_val - pad, max_val + pad
+
+
+def _hist_from_tree(file_path: str, tree_name: str, variable: str, bins: int, xmin: float, xmax: float):
+    df = ROOT.RDataFrame(tree_name, file_path)
+    hist_ptr = df.Histo1D((f"h_{Path(file_path).stem}_{variable}", variable, bins, xmin, xmax), variable)
+    hist = hist_ptr.GetValue()
+    hist.SetDirectory(0)
+    ROOT.SetOwnership(hist, False)
+    return hist
 
 
 @pytest.fixture(scope="module")
@@ -503,8 +513,8 @@ def test_fit_tools_run(sample_context):
 def test_plot_tools_hist_and_tree_plots(sample_context):
     one_d_pdf = _artifact_path("hist_1d.pdf")
     tree_pdf = _artifact_path("tree_var.pdf")
-    compare_pdf = _artifact_path("compare_tree_vars.pdf")
-    same_canvas_pdf = _artifact_path("same_canvas.pdf")
+    compare_pdf = _artifact_path("compare_tree_vars_ratio.pdf")
+    same_canvas_pdf = _artifact_path("same_canvas_ratio.pdf")
 
     out1 = draw_1d_histogram.invoke(
         {
@@ -543,10 +553,12 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
             "legends": ["signal", "background"],
             "output_pdf": str(compare_pdf),
             "normalize": True,
+            "show_ratio": True,
         }
     )
     assert "Saved comparison histogram" in out3
     assert compare_pdf.exists()
+    assert compare_pdf.stat().st_size > 0
 
     out4 = draw_histograms_same_canvas.invoke(
         {
@@ -555,10 +567,12 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
             "legends": ["signal", "background"],
             "output_pdf": str(same_canvas_pdf),
             "normalize": True,
+            "show_ratio": True,
         }
     )
     assert "Saved combined histogram plot" in out4
     assert same_canvas_pdf.exists()
+    assert same_canvas_pdf.stat().st_size > 0
 
 
 def test_compare_tree_variables_validation(sample_context):
@@ -625,7 +639,7 @@ def test_plot_tools_2d(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
-    output_pdf = _artifact_path("signal_vs_backgrounds.pdf")
+    output_pdf = _artifact_path("signal_vs_backgrounds_ratio.pdf")
 
     output = plot_signal_vs_backgrounds.invoke(
         {
@@ -638,6 +652,7 @@ def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
             "xmax": sample_context["xmax"],
             "output_pdf": str(output_pdf),
             "normalize": True,
+            "show_ratio": True,
         }
     )
 
@@ -647,7 +662,7 @@ def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
-    output_pdf = _artifact_path("signal_vs_two_backgrounds.pdf")
+    output_pdf = _artifact_path("signal_vs_two_backgrounds_ratio.pdf")
     output = plot_signal_vs_backgrounds.invoke(
         {
             "signal_file": sample_context["signal"],
@@ -660,10 +675,61 @@ def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
             "xmax": sample_context["xmax"],
             "output_pdf": str(output_pdf),
             "normalize": True,
+            "show_ratio": True,
         }
     )
     assert "Saved signal-vs-background comparison" in output
     assert output_pdf.exists()
+    assert output_pdf.stat().st_size > 0
+
+
+def test_signal_background_ratio_uses_sum_of_backgrounds(sample_context):
+    signal_hist = _hist_from_tree(
+        sample_context["signal"],
+        sample_context["tree"],
+        sample_context["variable"],
+        20,
+        sample_context["xmin"],
+        sample_context["xmax"],
+    )
+    background_hist = _hist_from_tree(
+        sample_context["background"],
+        sample_context["tree"],
+        sample_context["variable"],
+        20,
+        sample_context["xmin"],
+        sample_context["xmax"],
+    )
+    background2_hist = _hist_from_tree(
+        sample_context["background2"],
+        sample_context["tree"],
+        sample_context["variable"],
+        20,
+        sample_context["xmin"],
+        sample_context["xmax"],
+    )
+
+    ratio_hist = _build_signal_background_ratio(signal_hist, [background_hist, background2_hist])
+    assert ratio_hist is not None
+
+    total_background = background_hist.Clone("total_background_for_test")
+    total_background.SetDirectory(0)
+    ROOT.SetOwnership(total_background, False)
+    total_background.Add(background2_hist)
+
+    checked_bins = 0
+    for bin_idx in range(1, ratio_hist.GetNbinsX() + 1):
+        denominator = total_background.GetBinContent(bin_idx)
+        numerator = signal_hist.GetBinContent(bin_idx)
+        if denominator <= 0:
+            continue
+
+        expected = numerator / denominator
+        actual = ratio_hist.GetBinContent(bin_idx)
+        assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12)
+        checked_bins += 1
+
+    assert checked_bins > 0
 
 
 def test_plot_signal_vs_backgrounds_label_validation(sample_context):
