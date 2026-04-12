@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import ROOT
 from langchain_core.tools import tool
 
@@ -70,6 +70,22 @@ def _build_signal_background_ratio(signal_hist, background_hists: List):
     return ratio
 
 
+def _parse_file_inputs(
+    primary_file: Optional[str] = None,
+    additional_files: Optional[List[str]] = None,
+) -> List[str]:
+    """Normalize one-or-many file inputs into a clean list of paths."""
+    parsed: List[str] = []
+
+    if primary_file:
+        parsed.extend([p.strip() for p in primary_file.split(",") if p.strip()])
+
+    if additional_files:
+        parsed.extend([p.strip() for p in additional_files if p and p.strip()])
+
+    return list(dict.fromkeys(parsed))
+
+
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str, ratio_hists: List = None):
     if lower_pad is None:
         return
@@ -96,7 +112,8 @@ def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str, ratio_hists: Lis
 def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
                        y_title: str, canvas_name: str, canvas_title: str,
                        show_ratio: bool = False, logy: bool = False,
-                       ratio_hists: List = None) -> str:
+                       ratio_hists: List = None,
+                       draw_options: List[str] = None) -> str:
     if not hist_list:
         return "No histograms created."
 
@@ -117,7 +134,8 @@ def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
             hist.GetXaxis().SetTitleSize(0)
             hist.GetYaxis().SetTitleSize(0.055)
             hist.GetYaxis().SetLabelSize(0.045)
-        hist.Draw("HIST" if i == 0 else "HIST SAME")
+        draw_option = draw_options[i] if draw_options and i < len(draw_options) else ("HIST" if i == 0 else "HIST SAME")
+        hist.Draw(draw_option)
 
     legend.SetFillStyle(0)
     legend.Draw()
@@ -142,31 +160,10 @@ def draw_1d_histogram(
     line_color: int = ROOT.kBlue+1
 ) -> str:
     """
-    Draw a 1D histogram from a ROOT file and save it as a PDF.
+    Draw a 1D histogram from a ROOT file and save it to PDF.
 
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the histogram.
-    hist_name : str
-        Name of the 1D histogram inside the ROOT file.
-    output_pdf : str
-        Output PDF file path.
-    xlabel : str, optional
-        Label for the X-axis (default "").
-    ylabel : str, optional
-        Label for the Y-axis (default "Events").
-    logy : bool, optional
-        Whether to use a logarithmic Y-axis (default False).
-    normalize : bool, optional
-        Whether to normalize the histogram to unit area (default False).
-    line_color : int, optional
-        ROOT line color (default ROOT.kBlue+1).
-
-    Returns
-    -------
-    str
-        Confirmation message with the saved PDF path.
+    Supports axis labels, optional log-y scaling, and optional normalization
+    to unit area before drawing.
     """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -211,31 +208,10 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        output_pdf: str,
                        normalize: bool = False) -> str:
     """
-    Plot a single variable from a ROOT TTree and save it as a histogram PDF.
+    Plot one TTree variable as a 1D histogram and save to PDF.
 
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree to read from the ROOT file.
-    variable : str
-        Name of the variable to histogram.
-    bins : int
-        Number of bins in the histogram.
-    xmin : float
-        Lower edge of the histogram range.
-    xmax : float
-        Upper edge of the histogram range.
-    output_pdf : str
-        Path to save the resulting histogram as a PDF file.
-    normalize : bool, optional
-        Whether to normalize the histogram to unit area (default False).
-
-    Returns
-    -------
-    str
-        Confirmation message indicating the file path of the saved PDF.
+    The histogram range is controlled by bins/xmin/xmax and can be normalized
+    to compare shape differences across samples.
     """
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
@@ -265,35 +241,10 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
                            normalize: bool = False,
                            show_ratio: bool = False) -> str:
     """
-    Compare the variables defined in ROOT TTrees of two different files on the same histogram.
+    Overlay variables from multiple ROOT files/trees on one canvas.
 
-    Parameters
-    ----------
-    file_paths : List[str]
-        List of paths to ROOT files containing the TTrees.
-    tree_name : str
-        Name of TTree name corresponding to ROOT file.
-    variables : List[str]
-        List of variable names to histogram from each TTree.
-    bins : int
-        Number of bins for all histograms.
-    xmin : float
-        Lower edge of the histogram range.
-    xmax : float
-        Upper edge of the histogram range.
-    legends : List[str]
-        List of labels for the legend corresponding to each histogram.
-    output_pdf : str
-        Path to save the resulting comparison histogram as a PDF file.
-    normalize : bool, optional
-        Whether to normalize histograms to unit area (default False).
-    show_ratio : bool, optional
-        Whether to draw a ratio panel using the first histogram as reference.
-
-    Returns
-    -------
-    str
-        Confirmation message indicating the file path of the saved PDF.
+    Inputs are paired by index: file_paths[i], variables[i], legends[i].
+    Optionally normalizes each histogram and draws a ratio panel.
     """
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
@@ -346,35 +297,63 @@ def plot_signal_vs_backgrounds(
     xmax: float,
     output_pdf: str,
     signal_label: str = "Signal",
+    signal_files: List[str] = None,
+    signal_labels: List[str] = None,
     background_labels: List[str] = None,
+    data_file: str = "",
+    data_label: str = "Data",
+    plot_data: bool = False,
     normalize: bool = False,
     show_ratio: bool = False
 ) -> str:
     """
-    Overlay one signal distribution with multiple background distributions.
+    Plot HEP-style overlays for signal, backgrounds, and optional data.
 
-    This is a convenience wrapper around the generic comparison plotter for the
-    common HEP case of one signal sample against many backgrounds.
+    Visual convention: backgrounds are filled, signals are line-only, and data
+    is drawn with markers+errors. Supports multiple signal/background files.
     """
-    if not background_files:
+    signal_paths = _parse_file_inputs(signal_file, signal_files)
+    if not signal_paths:
+        return "Error: at least one signal file must be provided via signal_file or signal_files."
+
+    background_paths = _parse_file_inputs(additional_files=background_files)
+    if not background_paths:
         return "Error: background_files cannot be empty."
 
-    if background_labels is None:
-        background_labels = [f"Background {i + 1}" for i in range(len(background_files))]
+    if signal_labels is None:
+        if len(signal_paths) == 1:
+            signal_labels = [signal_label]
+        else:
+            signal_labels = [f"{signal_label} {i + 1}" for i in range(len(signal_paths))]
 
-    if len(background_labels) != len(background_files):
+    if len(signal_labels) != len(signal_paths):
+        return "Error: number of signal_labels must match number of signal files."
+
+    if background_labels is None:
+        background_labels = [f"Background {i + 1}" for i in range(len(background_paths))]
+
+    if len(background_labels) != len(background_paths):
         return "Error: number of background_labels must match number of background_files."
 
-    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
+    wants_data = plot_data or bool(data_file.strip())
+    if wants_data and not data_file.strip():
+        return "Error: data_file must be provided when plot_data is True."
 
-    file_paths = [signal_file] + background_files
-    labels = [signal_label] + background_labels
-    colors = [ROOT.kBlack, ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
+    legend.SetFillStyle(0)
+    legend.SetBorderSize(0)
+
+    signal_line_colors = [ROOT.kBlack, ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kMagenta + 1, ROOT.kGreen + 2, ROOT.kOrange + 7]
+    background_fill_colors = [ROOT.kAzure - 9, ROOT.kOrange - 2, ROOT.kSpring - 6, ROOT.kPink - 8, ROOT.kViolet - 6, ROOT.kCyan - 6]
 
     hist_list = []
-    for i, (fpath, label) in enumerate(zip(file_paths, labels)):
+    draw_options: List[str] = []
+    signal_hists = []
+    background_hists = []
+
+    for i, (fpath, label) in enumerate(zip(background_paths, background_labels)):
         df = ROOT.RDataFrame(tree_name, fpath)
-        hist_ptr = df.Histo1D((f"h_sigbkg_{i}", variable, bins, xmin, xmax), variable)
+        hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
         h.SetDirectory(0)
@@ -382,14 +361,65 @@ def plot_signal_vs_backgrounds(
         if normalize and h.Integral() > 0:
             h.Scale(1.0 / h.Integral())
 
-        h.SetLineColor(colors[i % len(colors)])
-        h.SetLineWidth(4 if i == 0 else 3)
-        h.SetLineStyle(1 if i == 0 else 2)
+        fill_color = background_fill_colors[i % len(background_fill_colors)]
+        h.SetFillColor(fill_color)
+        h.SetLineColor(fill_color)
+        h.SetLineWidth(2)
+        h.SetLineStyle(1)
         h.SetTitle("")
         h.GetXaxis().SetTitle(variable)
         h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
+        background_hists.append(h)
         hist_list.append(h)
+        draw_options.append("HIST" if len(draw_options) == 0 else "HIST SAME")
+        legend.AddEntry(h, label, "f")
+
+    for i, (fpath, label) in enumerate(zip(signal_paths, signal_labels)):
+        df = ROOT.RDataFrame(tree_name, fpath)
+        hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable)
+        h = hist_ptr.GetValue()
+        ROOT.SetOwnership(h, False)
+        h.SetDirectory(0)
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
+        line_color = signal_line_colors[i % len(signal_line_colors)]
+        h.SetFillStyle(0)
+        h.SetLineColor(line_color)
+        h.SetLineWidth(4)
+        h.SetLineStyle(1 + (i % 4))
+        h.SetTitle("")
+        h.GetXaxis().SetTitle(variable)
+        h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
+        signal_hists.append(h)
+        hist_list.append(h)
+        draw_options.append("HIST" if len(draw_options) == 0 else "HIST SAME")
         legend.AddEntry(h, label, "l")
+
+    if wants_data:
+        df = ROOT.RDataFrame(tree_name, data_file)
+        hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable)
+        data_hist = hist_ptr.GetValue()
+        ROOT.SetOwnership(data_hist, False)
+        data_hist.SetDirectory(0)
+
+        if normalize and data_hist.Integral() > 0:
+            data_hist.Scale(1.0 / data_hist.Integral())
+
+        data_hist.SetFillStyle(0)
+        data_hist.SetLineColor(ROOT.kBlack)
+        data_hist.SetMarkerColor(ROOT.kBlack)
+        data_hist.SetMarkerStyle(20)
+        data_hist.SetMarkerSize(1.0)
+        data_hist.SetTitle("")
+        data_hist.GetXaxis().SetTitle(variable)
+        data_hist.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
+        hist_list.append(data_hist)
+        draw_options.append("E1" if len(draw_options) == 0 else "E1 SAME")
+        legend.AddEntry(data_hist, data_label, "lep")
+
+    ratio_hist = _build_signal_background_ratio(signal_hists[0] if signal_hists else None, background_hists)
 
     result = _draw_overlay_plot(
         hist_list=hist_list,
@@ -400,7 +430,8 @@ def plot_signal_vs_backgrounds(
         canvas_name="c_sig_bkg",
         canvas_title="Signal vs Backgrounds",
         show_ratio=show_ratio,
-        ratio_hists=[_build_signal_background_ratio(hist_list[0], hist_list[1:])] if show_ratio and len(hist_list) >= 2 else None,
+        ratio_hists=[ratio_hist] if show_ratio and ratio_hist is not None else None,
+        draw_options=draw_options,
     )
     if result == "No histograms created.":
         return result
@@ -422,34 +453,10 @@ def draw_histograms_same_canvas(
     show_ratio: bool = False
 ) -> str:
     """
-    Compare ROOT histograms from different ROOT files on the same canvas
-    and save the resulting plot to a PDF file with academic styling.
+    Draw existing histograms from multiple ROOT files on a shared canvas.
 
-    Parameters
-    ----------
-    file_paths : List[str]
-        List of ROOT file paths.
-    hist_names : List[str]
-        List of histogram names in the files.
-    legends : List[str]
-        Legend labels for each histogram.
-    output_pdf : str
-        Output PDF file path.
-    xlabel : str, optional
-        Label for the X-axis (default "").
-    ylabel : str, optional
-        Label for the Y-axis (default "Events").
-    logy : bool, optional
-        Whether to use a logarithmic Y-axis (default False).
-    normalize : bool, optional
-        Whether to normalize histograms to unit area (default False).
-    show_ratio : bool, optional
-        Whether to draw a ratio panel using the first histogram as reference.
-
-    Returns
-    -------
-    str
-        Confirmation message with saved file.
+    Histogram names and legend labels are matched by index. Supports optional
+    normalization, log-y rendering, and a ratio panel.
     """
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
@@ -519,29 +526,10 @@ def draw_2d_histogram(
     normalize: bool = False
 ) -> str:
     """
-    Draw a 2D histogram from a ROOT file with professional styling and save as a PDF.
+    Draw a 2D histogram from a ROOT file and save to PDF.
 
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the histogram.
-    hist_name : str
-        Name of the 2D histogram inside the ROOT file.
-    output_pdf : str
-        Output PDF file path.
-    xlabel : str, optional
-        X-axis label (default "").
-    ylabel : str, optional
-        Y-axis label (default "").
-    color_palette : int, optional
-        ROOT color palette index (default 55).
-    normalize : bool, optional
-        Whether to normalize the histogram to unit area (default False).
-
-    Returns
-    -------
-    str
-        Confirmation message with the saved PDF path.
+    Allows custom axis labels, ROOT color palette selection, and optional
+    normalization to unit integral.
     """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -597,7 +585,10 @@ def draw_2d_histogram_from_tree(
     color_palette: int = 55
 ) -> str:
     """
-    Draw a 2D histogram from two branches of a TTree and save as a PDF.
+    Build and draw a 2D histogram directly from two TTree branches.
+
+    Uses explicit x/y binning and ranges, then saves a COLZ-style plot to PDF
+    with optional custom axis labels and palette.
     """
 
     f = ROOT.TFile.Open(file_path)

@@ -683,6 +683,53 @@ def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
     assert output_pdf.stat().st_size > 0
 
 
+def test_plot_signal_vs_backgrounds_multiple_signals(sample_context):
+    output_pdf = _artifact_path("two_signals_vs_background_ratio.pdf")
+    output = plot_signal_vs_backgrounds.invoke(
+        {
+            "signal_file": sample_context["signal"],
+            "signal_files": [sample_context["background2"]],
+            "signal_labels": ["sig1", "sig2"],
+            "background_files": [sample_context["background"]],
+            "background_labels": ["bkg"],
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "bins": 20,
+            "xmin": sample_context["xmin"],
+            "xmax": sample_context["xmax"],
+            "output_pdf": str(output_pdf),
+            "normalize": True,
+            "show_ratio": True,
+        }
+    )
+    assert "Saved signal-vs-background comparison" in output
+    assert output_pdf.exists()
+    assert output_pdf.stat().st_size > 0
+
+
+def test_plot_signal_vs_backgrounds_with_data_markers(sample_context):
+    output_pdf = _artifact_path("signal_background_data_markers.pdf")
+    output = plot_signal_vs_backgrounds.invoke(
+        {
+            "signal_file": sample_context["signal"],
+            "background_files": [sample_context["background"]],
+            "data_file": sample_context["background2"],
+            "plot_data": True,
+            "data_label": "data",
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "bins": 20,
+            "xmin": sample_context["xmin"],
+            "xmax": sample_context["xmax"],
+            "output_pdf": str(output_pdf),
+            "normalize": True,
+        }
+    )
+    assert "Saved signal-vs-background comparison" in output
+    assert output_pdf.exists()
+    assert output_pdf.stat().st_size > 0
+
+
 def test_signal_background_ratio_uses_sum_of_backgrounds(sample_context):
     signal_hist = _hist_from_tree(
         sample_context["signal"],
@@ -747,6 +794,41 @@ def test_plot_signal_vs_backgrounds_label_validation(sample_context):
         }
     )
     assert "number of background_labels must match" in output
+
+
+def test_plot_signal_vs_backgrounds_signal_label_validation(sample_context):
+    output = plot_signal_vs_backgrounds.invoke(
+        {
+            "signal_file": sample_context["signal"],
+            "signal_files": [sample_context["background2"]],
+            "signal_labels": ["only_one"],
+            "background_files": [sample_context["background"]],
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "bins": 10,
+            "xmin": sample_context["xmin"],
+            "xmax": sample_context["xmax"],
+            "output_pdf": str(_artifact_path("signal_vs_backgrounds_invalid_signals.pdf")),
+        }
+    )
+    assert "number of signal_labels must match" in output
+
+
+def test_plot_signal_vs_backgrounds_data_validation(sample_context):
+    output = plot_signal_vs_backgrounds.invoke(
+        {
+            "signal_file": sample_context["signal"],
+            "background_files": [sample_context["background"]],
+            "plot_data": True,
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "bins": 10,
+            "xmin": sample_context["xmin"],
+            "xmax": sample_context["xmax"],
+            "output_pdf": str(_artifact_path("signal_vs_backgrounds_invalid_data.pdf")),
+        }
+    )
+    assert "data_file must be provided" in output
 
 
 def test_utils_functions(sample_context):
