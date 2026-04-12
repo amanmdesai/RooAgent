@@ -31,8 +31,11 @@ Prioritize correctness, efficiency, reproducibility.
 # -----------------------------
 # Initialize Model (GitHub Copilot / GitHub Models API)
 # -----------------------------
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
+MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
+
 model = ChatOpenAI(
-    model="gpt-4o",
+    model=MODEL_NAME,
     api_key=os.getenv("GITHUB_TOKEN"),
     base_url="https://models.inference.ai.azure.com"
 )
@@ -132,7 +135,7 @@ agent = builder.compile()
 # CLI
 # -----------------------------
 def main():
-    print("\nROOT Physics Analysis Agent (GPT-4o via GitHub Models)")
+    print(f"\nROOT Physics Analysis Agent using ({MODEL_NAME})")
     print("Type 'exit' to quit\n")
 
     state = {"messages": [], "llm_calls": 0}
