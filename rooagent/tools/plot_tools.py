@@ -166,6 +166,9 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
     str
         Confirmation message indicating the file path of the saved PDF.
     """
+    if not (len(file_paths) == len(variables) == len(legends)):
+        return "Error: file_paths, variables, and legends must have the same length."
+
     canv = ROOT.TCanvas("c1", "Comparison", 900, 700)
     legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
     colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
@@ -202,6 +205,78 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
     canv.Update()
     canv.SaveAs(output_pdf)
     return f"Saved comparison histogram to {output_pdf}"
+
+
+@tool
+def plot_signal_vs_backgrounds(
+    signal_file: str,
+    background_files: List[str],
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    output_pdf: str,
+    signal_label: str = "Signal",
+    background_labels: List[str] = None,
+    normalize: bool = False
+) -> str:
+    """
+    Overlay one signal distribution with multiple background distributions.
+
+    This is a convenience wrapper around the generic comparison plotter for the
+    common HEP case of one signal sample against many backgrounds.
+    """
+    if not background_files:
+        return "Error: background_files cannot be empty."
+
+    if background_labels is None:
+        background_labels = [f"Background {i + 1}" for i in range(len(background_files))]
+
+    if len(background_labels) != len(background_files):
+        return "Error: number of background_labels must match number of background_files."
+
+    canv = ROOT.TCanvas("c_sig_bkg", "Signal vs Backgrounds", 900, 700)
+    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
+    legend.SetFillStyle(0)
+
+    file_paths = [signal_file] + background_files
+    labels = [signal_label] + background_labels
+    colors = [ROOT.kBlack, ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+
+    hist_list = []
+    for i, (fpath, label) in enumerate(zip(file_paths, labels)):
+        df = ROOT.RDataFrame(tree_name, fpath)
+        hist_ptr = df.Histo1D((f"h_sigbkg_{i}", variable, bins, xmin, xmax), variable)
+        h = hist_ptr.GetValue()
+        ROOT.SetOwnership(h, False)
+        h.SetDirectory(0)
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
+        h.SetLineColor(colors[i % len(colors)])
+        h.SetLineWidth(4 if i == 0 else 3)
+        h.SetLineStyle(1 if i == 0 else 2)
+        h.SetTitle("")
+        h.GetXaxis().SetTitle(variable)
+        h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
+        hist_list.append(h)
+        legend.AddEntry(h, label, "l")
+
+    if not hist_list:
+        return "No histograms created."
+
+    max_val = max(h.GetMaximum() for h in hist_list)
+    for i, h in enumerate(hist_list):
+        h.SetMaximum(max_val * 1.35)
+        h.Draw("HIST" if i == 0 else "HIST SAME")
+
+    legend.Draw()
+    canv.Update()
+    canv.SaveAs(output_pdf)
+
+    return f"Saved signal-vs-background comparison to {output_pdf}"
 
 
 # ================= DRAW HISTOGRAMS FROM FILES =================
@@ -244,6 +319,9 @@ def draw_histograms_same_canvas(
     str
         Confirmation message with saved file.
     """
+    if not (len(file_paths) == len(hist_names) == len(legends)):
+        return "Error: file_paths, hist_names, and legends must have the same length."
+
     canv = ROOT.TCanvas("c1", "Combined Histograms", 1000, 700)
     if logy:
         canv.SetLogy(True)

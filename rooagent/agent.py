@@ -55,6 +55,7 @@ tools = [
     fit_histogram,
     draw_histograms_same_canvas,
     draw_2d_histogram,
+    plot_signal_vs_backgrounds,
     find_optimal_cut,
     draw_1d_histogram,
     define_variable,

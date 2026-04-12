@@ -1,14 +1,70 @@
 from typing import List, Dict, Optional
 import ROOT
 from langchain_core.tools import tool
-import re
 from .utils import *
+
+
+def _parse_background_inputs(
+    background_file: Optional[str] = None,
+    background_files: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Normalize background inputs into a clean list of ROOT file paths.
+
+    Supports either:
+    - background_file="bkg.root"
+    - background_files=["bkg1.root", "bkg2.root"]
+    - background_file="bkg1.root, bkg2.root" (comma-separated)
+    """
+    parsed: List[str] = []
+
+    if background_file:
+        parsed.extend([p.strip() for p in background_file.split(",") if p.strip()])
+
+    if background_files:
+        parsed.extend([p.strip() for p in background_files if p and p.strip()])
+
+    # De-duplicate while preserving order.
+    unique = list(dict.fromkeys(parsed))
+    return unique
+
+
+def _build_dataframe(tree_name: str, files: List[str]):
+    """Build an RDataFrame from one or more ROOT files."""
+    if len(files) == 1:
+        return ROOT.RDataFrame(tree_name, files[0])
+    return ROOT.RDataFrame(tree_name, files)
+
+
+def _has_column(df, column_name: str) -> bool:
+    """Return True if the RDataFrame contains a column with the given name."""
+    if not column_name:
+        return False
+
+    cols = [str(c) for c in df.GetColumnNames()]
+    return column_name in cols
+
+
+def _filtered_yield(df, cut: str, weight: Optional[str] = None):
+    """Return weighted or unweighted yield after applying a cut."""
+    filtered = df.Filter(cut)
+    if weight and _has_column(filtered, weight):
+        return filtered.Sum(weight).GetValue()
+    return filtered.Count().GetValue()
+
+
+def _total_yield(df, weight: Optional[str] = None):
+    """Return weighted total yield, or Count if weight is missing."""
+    if weight and _has_column(df, weight):
+        return df.Sum(weight).GetValue()
+    return df.Count().GetValue()
 
 
 @tool
 def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "all",
-                        weight: Optional[str] = None) -> str:
+                        weight: Optional[str] = None,
+                        file_paths: Optional[List[str]] = None) -> str:
     """
     Apply a selection cut to a ROOT TTree and count the number of events passing the cut.
 
@@ -27,6 +83,8 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
         Name of the branch containing event weights. If provided, the tool
         returns the sum of weights for events passing the cut instead of
         the raw event count.
+    file_paths : list of str, optional
+        Additional ROOT file paths to merge with file_path for counting.
 
     Returns
     -------
@@ -35,18 +93,19 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
         passing the cut.
     """
 
-    vector_vars = get_vector_branches(file_path, tree_name)
+    paths = _parse_background_inputs(file_path, file_paths)
+    if not paths:
+        return "Error: no file(s) provided."
+
+    vector_vars = get_vector_branches(paths[0], tree_name)
     cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
 
-    df = ROOT.RDataFrame(tree_name, file_path)
-    filtered = df.Filter(cut)
+    df = _build_dataframe(tree_name, paths)
 
+    value = _filtered_yield(df, cut, weight)
     if weight:
-        value = filtered.Sum(weight).GetValue()
-        return f"Weighted events passing cut '{cut}': {value}"
-    else:
-        value = filtered.Count().GetValue()
-        return f"Events passing cut '{cut}': {value}"
+        return f"Weighted events passing cut '{cut}': {value} (files={len(paths)})"
+    return f"Events passing cut '{cut}': {value} (files={len(paths)})"
 
 
 @tool
@@ -55,7 +114,8 @@ def compute_significance(signal_file: str,
                          tree_name: str,
                          cut: str,
                          vector_mode: str = "all",
-                         weight: Optional[str] = None) -> str:
+                         weight: Optional[str] = None,
+                         background_files: Optional[List[str]] = None) -> str:
     """
     Compute the statistical significance S / sqrt(S + B) for a given selection cut.
 
@@ -64,7 +124,8 @@ def compute_significance(signal_file: str,
     signal_file : str
         Path to the ROOT file containing the signal TTree.
     background_file : str
-        Path to the ROOT file containing the background TTree.
+        Path to the ROOT file containing one background TTree.
+        Can also be a comma-separated list of files.
     tree_name : str
         Name of the TTree in both files.
     cut : str
@@ -75,6 +136,9 @@ def compute_significance(signal_file: str,
     weight : str, optional
         Name of the branch containing event weights. If provided, the
         significance will be computed using weighted yields.
+    background_files : list of str, optional
+        Additional background ROOT files. If provided, all files are merged
+        and treated as total background.
 
     Returns
     -------
@@ -86,22 +150,26 @@ def compute_significance(signal_file: str,
     vector_vars = get_vector_branches(signal_file, tree_name)
     cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
 
-    sig_df = ROOT.RDataFrame(tree_name, signal_file).Filter(cut)
-    bkg_df = ROOT.RDataFrame(tree_name, background_file).Filter(cut)
+    bkg_paths = _parse_background_inputs(background_file, background_files)
+    if not bkg_paths:
+        return "Error: no background file(s) provided."
 
-    if weight:
-        S = sig_df.Sum(weight).GetValue()
-        B = bkg_df.Sum(weight).GetValue()
-    else:
-        S = sig_df.Count().GetValue()
-        B = bkg_df.Count().GetValue()
+    sig_df = ROOT.RDataFrame(tree_name, signal_file)
+    bkg_df = _build_dataframe(tree_name, bkg_paths)
+
+    S = _filtered_yield(sig_df, cut, weight)
+    B = _filtered_yield(bkg_df, cut, weight)
 
     if (S + B) <= 0:
         return "No events after cuts; significance undefined."
 
     significance = S / ((S + B) ** 0.5)
 
-    return f"S={S}, B={B}, Significance={significance:.3f}"
+    return (
+        f"Signal file: {signal_file}\n"
+        f"Background files ({len(bkg_paths)}): {', '.join(bkg_paths)}\n"
+        f"S={S}, B={B}, Significance={significance:.3f}"
+    )
 
 @tool
 def define_variable(
@@ -202,7 +270,7 @@ def define_variable_and_plot(file_path: str, tree_name: str,
         safe_cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
         df = df.Filter(safe_cut)
 
-    if weight:
+    if weight and _has_column(df, weight):
         hist_ptr = df.Histo1D(
             (variable_to_plot, variable_to_plot, bins, xmin, xmax),
             variable_to_plot,
@@ -242,7 +310,8 @@ def find_optimal_cut(signal_file: str,
                      step: float,
                      base_cut: str = "",
                      vector_mode: str = "all",
-                     weight: Optional[str] = None) -> str:
+                     weight: Optional[str] = None,
+                     background_files: Optional[List[str]] = None) -> str:
     """
     Scan a cut on a variable and find the value that maximizes S/sqrt(S+B).
 
@@ -251,7 +320,8 @@ def find_optimal_cut(signal_file: str,
     signal_file : str
         ROOT file containing the signal TTree.
     background_file : str
-        ROOT file containing the background TTree.
+        ROOT file containing one background TTree.
+        Can also be a comma-separated list of files.
     tree_name : str
         Name of the TTree in both files.
     variable : str
@@ -270,6 +340,9 @@ def find_optimal_cut(signal_file: str,
     weight : str, optional
         Name of the branch containing event weights. If provided,
         the scan uses weighted event yields for S and B.
+    background_files : list of str, optional
+        Additional background ROOT files. If provided, all files are merged
+        and treated as total background.
 
     Returns
     -------
@@ -278,8 +351,12 @@ def find_optimal_cut(signal_file: str,
         and significance.
     """
 
+    bkg_paths = _parse_background_inputs(background_file, background_files)
+    if not bkg_paths:
+        return "Error: no background file(s) provided."
+
     sig_df = ROOT.RDataFrame(tree_name, signal_file)
-    bkg_df = ROOT.RDataFrame(tree_name, background_file)
+    bkg_df = _build_dataframe(tree_name, bkg_paths)
 
     vector_vars = get_vector_branches(signal_file, tree_name)
 
@@ -301,15 +378,8 @@ def find_optimal_cut(signal_file: str,
 
         full_cut = rewrite_vector_cut(full_cut, vector_vars, vector_mode)
 
-        sig_filtered = sig_df.Filter(full_cut)
-        bkg_filtered = bkg_df.Filter(full_cut)
-
-        if weight:
-            S = sig_filtered.Sum(weight).GetValue()
-            B = bkg_filtered.Sum(weight).GetValue()
-        else:
-            S = sig_filtered.Count().GetValue()
-            B = bkg_filtered.Count().GetValue()
+        S = _filtered_yield(sig_df, full_cut, weight)
+        B = _filtered_yield(bkg_df, full_cut, weight)
 
         significance = S / ((S + B) ** 0.5) if (S + B) > 0 else 0
 
@@ -324,6 +394,8 @@ def find_optimal_cut(signal_file: str,
     return (
         f"Optimal cut found:\n"
         f"{variable} > {best_cut}\n"
+        f"Signal file: {signal_file}\n"
+        f"Background files ({len(bkg_paths)}): {', '.join(bkg_paths)}\n"
         f"S = {best_S}, B = {best_B}\n"
         f"Significance = {best_sig:.3f}"
     )
@@ -335,7 +407,8 @@ def generate_cutflow(
     tree_name: str,
     cuts: List[str],
     vector_mode: str = "any",
-    weight: Optional[str] = None
+    weight: Optional[str] = None,
+    file_paths: Optional[List[str]] = None
 ) -> str:
     """
     Generate a cutflow table by sequentially applying cuts to a ROOT TTree.
@@ -355,6 +428,8 @@ def generate_cutflow(
     weight : str, optional
         Name of the branch containing event weights. If provided,
         weighted yields will be reported.
+    file_paths : list of str, optional
+        Additional ROOT files to merge with file_path before applying cuts.
 
     Returns
     -------
@@ -363,19 +438,20 @@ def generate_cutflow(
         remaining after each selection.
     """
 
-    df = ROOT.RDataFrame(tree_name, file_path)
+    paths = _parse_background_inputs(file_path, file_paths)
+    if not paths:
+        return "Error: no file(s) provided."
 
-    vector_vars = get_vector_branches(file_path, tree_name)
+    df = _build_dataframe(tree_name, paths)
+
+    vector_vars = get_vector_branches(paths[0], tree_name)
 
     results = []
 
     # initial count
-    if weight:
-        initial = df.Sum(weight).GetValue()
-    else:
-        initial = df.Count().GetValue()
+    initial = _total_yield(df, weight)
 
-    results.append(f"Initial events: {initial}")
+    results.append(f"Initial events (files={len(paths)}): {initial}")
 
     current_df = df
 
@@ -385,10 +461,7 @@ def generate_cutflow(
 
         current_df = current_df.Filter(safe_cut)
 
-        if weight:
-            value = current_df.Sum(weight).GetValue()
-        else:
-            value = current_df.Count().GetValue()
+        value = _total_yield(current_df, weight)
 
         results.append(f"{cut}: {value}")
 
