@@ -51,6 +51,9 @@ def fit_tree_variable(
     canvas.Update()
     canvas.SaveAs(output_plot)
 
+    if func is None:
+        return f"Plot saved to {output_plot}, but fit function '{fit_function}' not found after fitting."
+
     # Extract fit parameters
     params = [f"p{i} = {func.GetParameter(i):.4f}" for i in range(func.GetNpar())]
     chi2 = func.GetChisquare()
@@ -112,6 +115,10 @@ def fit_histogram(
 
     canvas.Update()
     canvas.SaveAs(output_plot)
+
+    if func is None:
+        f.Close()
+        return f"Plot saved to {output_plot}, but fit function '{fit_function}' not found after fitting."
 
     # Extract fit parameters
     params = [f"p{i}={func.GetParameter(i):.4f}" for i in range(func.GetNpar())]

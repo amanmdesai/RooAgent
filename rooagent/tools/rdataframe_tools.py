@@ -219,9 +219,12 @@ def find_optimal_cut(signal_file: str,
     best_S = 0
     best_B = 0
 
-    cut_val = min_cut
-
-    while cut_val <= max_cut:
+    import math
+    n_steps = int(round((max_cut - min_cut) / step)) + 1
+    for i in range(n_steps):
+        cut_val = round(min_cut + i * step, 10)
+        if cut_val > max_cut:
+            break
 
         scan_cut = f"{variable} > {cut_val}"
 
@@ -242,8 +245,6 @@ def find_optimal_cut(signal_file: str,
             best_cut = cut_val
             best_S = S
             best_B = B
-
-        cut_val += step
 
     return (
         f"Optimal cut found:\n"

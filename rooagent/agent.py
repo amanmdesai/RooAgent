@@ -1,6 +1,6 @@
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
-from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
 from typing_extensions import TypedDict, Annotated
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import InMemorySaver  

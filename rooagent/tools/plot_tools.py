@@ -1,6 +1,39 @@
 from typing import List, Optional
 import ROOT
 from langchain_core.tools import tool
+import re
+
+
+def _safe_get_vector_branches(file_path: str, tree_name: str) -> List[str]:
+    """Safely obtain vector branch names; return empty list if ROOT/imports unavailable."""
+    try:
+        from .utils import get_vector_branches as _get_vector_branches
+
+        return _get_vector_branches(file_path, tree_name)
+    except Exception:
+        return []
+
+
+def _rewrite_vector_cut_local(cut: str, vector_vars: List[str], mode: str = "any") -> str:
+    """Rewrite comparisons on vector branches using ROOT::VecOps reducers.
+
+    This is kept local to avoid importing the whole `utils` module (which
+    imports ROOT at top-level) during package installation.
+    """
+    if mode not in ["any", "all"]:
+        return cut
+
+    reducer = "Any" if mode == "any" else "All"
+
+    for var in vector_vars:
+        pattern = rf"({var}\s*[<>!=]=?\s*[-+]?\d*\.?\d+)"
+        matches = re.findall(pattern, cut)
+
+        for match in matches:
+            wrapped = f"ROOT::VecOps::{reducer}({match})"
+            cut = cut.replace(match, wrapped)
+
+    return cut
 
 
 def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
@@ -113,6 +146,7 @@ def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str, ratio_hists: Lis
 
     x_axis = ratio_hists[0].GetXaxis()
     unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+    ROOT.SetOwnership(unity, False)
     unity.SetLineStyle(2)
     unity.SetLineColor(ROOT.kGray + 2)
     unity.Draw()
@@ -328,7 +362,10 @@ def plot_signal_vs_backgrounds(
     plot_data: bool = False,
     normalize: bool = False,
     show_ratio: bool = False,
-    weight_branch: str = ""
+    weight_branch: str = "",
+    cuts: Optional[List[str]] = None,
+    vector_mode: str = "all",
+    apply_cuts_before_plot: bool = True
 ) -> str:
     """Plot signal, backgrounds, and optional data in HEP style with optional event weights.
 
@@ -381,6 +418,12 @@ def plot_signal_vs_backgrounds(
     # --- Build background histograms ---
     for i, (fpath, _label) in enumerate(zip(background_paths, background_labels)):
         df = ROOT.RDataFrame(tree_name, fpath)
+        if cuts and apply_cuts_before_plot:
+            vector_vars = _safe_get_vector_branches(fpath, tree_name)
+            for cut in cuts:
+                safe_cut = _rewrite_vector_cut_local(cut, vector_vars, vector_mode)
+                df = df.Filter(safe_cut)
+
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
             hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
@@ -399,6 +442,12 @@ def plot_signal_vs_backgrounds(
     # --- Build signal histograms ---
     for i, (fpath, _label) in enumerate(zip(signal_paths, signal_labels)):
         df = ROOT.RDataFrame(tree_name, fpath)
+        if cuts and apply_cuts_before_plot:
+            vector_vars = _safe_get_vector_branches(fpath, tree_name)
+            for cut in cuts:
+                safe_cut = _rewrite_vector_cut_local(cut, vector_vars, vector_mode)
+                df = df.Filter(safe_cut)
+
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
             hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
@@ -419,6 +468,12 @@ def plot_signal_vs_backgrounds(
     # --- Build data histogram (pure overlay – never part of the stack) ---
     if wants_data:
         df = ROOT.RDataFrame(tree_name, data_file)
+        if cuts and apply_cuts_before_plot:
+            vector_vars = _safe_get_vector_branches(data_file, tree_name)
+            for cut in cuts:
+                safe_cut = _rewrite_vector_cut_local(cut, vector_vars, vector_mode)
+                df = df.Filter(safe_cut)
+
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
             hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable, resolved_weight)
@@ -610,15 +665,18 @@ def draw_histograms_same_canvas(
 
     colors = [ROOT.kBlue+1, ROOT.kRed+1, ROOT.kGreen+2, ROOT.kMagenta+1, ROOT.kOrange+7, ROOT.kCyan+2]
     hist_list = []
+    skipped = []
 
     for i, (fpath, hname, label) in enumerate(zip(file_paths, hist_names, legends)):
         f = ROOT.TFile.Open(fpath)
         if not f or f.IsZombie():
+            skipped.append(f"could not open {fpath}")
             continue
 
         h = f.Get(hname)
         if not h:
             f.Close()
+            skipped.append(f"histogram '{hname}' not found in {fpath}")
             continue
 
         h.SetDirectory(0)
@@ -652,7 +710,10 @@ def draw_histograms_same_canvas(
     if result == "No histograms created.":
         return "Error: No histograms were found."
 
-    return f"Saved combined histogram plot to {output_pdf}"
+    msg = f"Saved combined histogram plot to {output_pdf}"
+    if skipped:
+        msg += "\nWarnings:\n" + "\n".join(f"  - {s}" for s in skipped)
+    return msg
 
 
 # ================= 2D HISTOGRAM =================
