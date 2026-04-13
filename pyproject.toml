@@ -27,3 +27,6 @@ rooagent = "rooagent.agent:main"
 
 [project.urls]
 Homepage = "https://github.com/amanmdesai/RooAgent"
+
+[tool.setuptools.packages.find]
+exclude = ["tests", "test*"]

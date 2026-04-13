@@ -12,34 +12,7 @@ def fit_tree_variable(
     fit_function: str,
     output_plot: str
 ) -> str:
-    """
-    Create a histogram from a ROOT TTree variable, perform a statistical fit,
-    and save the resulting plot with legend.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the TTree.
-    tree_name : str
-        Name of the TTree to read.
-    variable : str
-        Name of the variable to histogram and fit.
-    bins : int
-        Number of bins in the histogram.
-    xmin : float
-        Minimum x-axis value.
-    xmax : float
-        Maximum x-axis value.
-    fit_function : str
-        ROOT fit function (examples: 'gaus', 'expo', 'pol1', 'pol2').
-    output_plot : str
-        File name where the canvas with histogram and fit will be saved.
-
-    Returns
-    -------
-    str
-        Summary of fit parameters and chi-square/NDF.
-    """
+    """Histogram a TTree variable, fit with a ROOT function (e.g. 'gaus', 'expo', 'pol1'), and save the plot."""
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
     h = hist_ptr.GetValue()
@@ -78,6 +51,9 @@ def fit_tree_variable(
     canvas.Update()
     canvas.SaveAs(output_plot)
 
+    if func is None:
+        return f"Plot saved to {output_plot}, but fit function '{fit_function}' not found after fitting."
+
     # Extract fit parameters
     params = [f"p{i} = {func.GetParameter(i):.4f}" for i in range(func.GetNpar())]
     chi2 = func.GetChisquare()
@@ -97,25 +73,7 @@ def fit_histogram(
     fit_function: str,
     output_plot: str
 ) -> str:
-    """
-    Fit an existing histogram in a ROOT file, overlay the fit, and save with legend.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the histogram.
-    hist_name : str
-        Name of the histogram to fit.
-    fit_function : str
-        ROOT fit function (examples: 'gaus', 'expo', 'pol1', 'pol2').
-    output_plot : str
-        File name where the canvas with histogram and fit will be saved.
-
-    Returns
-    -------
-    str
-        Summary of fit parameters and chi-square/NDF.
-    """
+    """Fit an existing ROOT histogram with a ROOT function (e.g. 'gaus', 'expo', 'pol1') and save the overlaid plot."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return "Error: could not open ROOT file."
@@ -157,6 +115,10 @@ def fit_histogram(
 
     canvas.Update()
     canvas.SaveAs(output_plot)
+
+    if func is None:
+        f.Close()
+        return f"Plot saved to {output_plot}, but fit function '{fit_function}' not found after fitting."
 
     # Extract fit parameters
     params = [f"p{i}={func.GetParameter(i):.4f}" for i in range(func.GetNpar())]

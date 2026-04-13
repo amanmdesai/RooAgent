@@ -23,11 +23,3 @@ Requires a pre-installed version of ROOT that is compatible to work with Python
 ```
 CERN ROOT: - ROOT >= 6.34 (https://root.cern/)
 ```
-
-Install ollama's gpt-oss model: 
-
-```
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull gpt-oss
-```
-

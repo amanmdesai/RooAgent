@@ -5,25 +5,7 @@ from langchain_core.tools import tool
 
 @tool
 def get_histogram_stats(file_path: str, hist_name: str) -> str:
-    """
-    Retrieve basic statistical information (mean, RMS, entries) of a histogram
-    stored in a ROOT file.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing the histogram.
-    hist_name : str
-        Name of the histogram within the ROOT file.
-
-    Returns
-    -------
-    str
-        A formatted string reporting the histogram's mean, RMS, and total entries.
-        Example:
-            "myHist -> Mean: 0.123, RMS: 1.234, Entries: 1000"
-
-    """
+    """Get mean, RMS, and entries of a histogram stored in a ROOT file."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: could not open file {file_path}."
