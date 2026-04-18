@@ -1,6 +1,15 @@
 import ROOT
 from langchain_core.tools import tool
 
+
+# Module-level counter for unique canvas names
+_canvas_counter = [0]
+
+
+def _unique_canvas_name(base: str) -> str:
+    _canvas_counter[0] += 1
+    return f"{base}_{_canvas_counter[0]}"
+
 @tool
 def fit_tree_variable(
     file_path: str,
@@ -12,13 +21,15 @@ def fit_tree_variable(
     fit_function: str,
     output_plot: str
 ) -> str:
-    """Histogram a TTree variable, fit with a ROOT function (e.g. 'gaus', 'expo', 'pol1'), and save the plot."""
+    """USE WHEN: histogram a TTree variable and fit it with a ROOT function (e.g. 'gaus','expo'). Saves plot and returns fit parameters and Chi2/NDF."""
     df = ROOT.RDataFrame(tree_name, file_path)
     hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
     h = hist_ptr.GetValue()
+    # Detach histogram from file ownership so it survives after file close
+    h.SetDirectory(0)
     ROOT.SetOwnership(h, False)
 
-    canvas = ROOT.TCanvas("c_fit", "", 900, 700)
+    canvas = ROOT.TCanvas(_unique_canvas_name("c_fit"), "", 900, 700)
     #canvas.SetGrid()
 
     # Perform fit
@@ -50,6 +61,7 @@ def fit_tree_variable(
 
     canvas.Update()
     canvas.SaveAs(output_plot)
+    del hist_ptr  # safe to release after saving
 
     if func is None:
         return f"Plot saved to {output_plot}, but fit function '{fit_function}' not found after fitting."
@@ -73,7 +85,7 @@ def fit_histogram(
     fit_function: str,
     output_plot: str
 ) -> str:
-    """Fit an existing ROOT histogram with a ROOT function (e.g. 'gaus', 'expo', 'pol1') and save the overlaid plot."""
+    """USE WHEN: fit a pre-existing TH1 in a ROOT file with a ROOT function (e.g. 'gaus'). Saves overlay plot and returns fit parameters and Chi2/NDF."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return "Error: could not open ROOT file."
@@ -83,9 +95,11 @@ def fit_histogram(
         f.Close()
         return f"Histogram '{hist_name}' not found."
 
+    # Detach from file so the histogram is safe after closing the file
+    h.SetDirectory(0)
     ROOT.SetOwnership(h, False)
 
-    canvas = ROOT.TCanvas("c_fit_hist", "", 900, 700)
+    canvas = ROOT.TCanvas(_unique_canvas_name("c_fit_hist"), "", 900, 700)
     #canvas.SetGrid()
 
     # Perform fit

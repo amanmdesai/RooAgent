@@ -4,6 +4,15 @@ from langchain_core.tools import tool
 from .utils import *
 
 
+# Module-level counter ensures unique ROOT canvas names
+_canvas_counter = [0]
+
+
+def _unique_canvas_name(base: str) -> str:
+    _canvas_counter[0] += 1
+    return f"{base}_{_canvas_counter[0]}"
+
+
 def _parse_background_inputs(
     background_file: Optional[str] = None,
     background_files: Optional[List[str]] = None
@@ -182,7 +191,7 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     h.GetXaxis().SetTitle(variable_to_plot)
     h.GetYaxis().SetTitle("Events")
 
-    canvas = ROOT.TCanvas("c1", "", 900, 700)
+    canvas = ROOT.TCanvas(_unique_canvas_name("c1"), "", 900, 700)
     h.Draw("HIST")
 
     canvas.Update()

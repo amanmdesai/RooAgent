@@ -11,30 +11,47 @@ from .tools import *
 
 # SYSTEM PROMPT
 SYSTEM_PROMPT = """
-ROOT HEP analysis assistant. Inspect files → select trees/branches → analyze with tools.
+ROOT-based HEP analysis assistant.
 
-WORKFLOW: list_root_file_contents() → list_ttrees() → analyze using plotting/cutting tools.
+RULES:
+1. Always use tools. Never guess.
+2. Verify everything (files, trees, branches) before use.
+3. Workflow: inspect file -> trees -> branches -> analyze.
+4. Auto-use single tree; list if multiple.
+5. Handle missing data and empty results safely.
+6. Compare signal vs background when relevant.
+7. Output: clear plots, labeled axes, report statistics.
+8. No assumptions. State uncertainty if unverified.
 
-TOOLS: Histograms, overlays (signal/backgrounds/data), cuts, fits, variables, cutflows, CSV export.
-
-PLOTTING: backgrounds=filled, signals=lines, data=markers. Include labels, legends, ratios when needed.
-
-ANALYSIS: vector_mode="any" (≥1 object) or "all" (all objects). Report S, B, significance.
-
-RULES: Always use tools; verify outputs; no assumptions; clear error messages.
+Prioritize correctness, efficiency, reproducibility.
 """
 
 # -----------------------------
-# Initialize Model (GitHub Copilot / GitHub Models API)
+# Multi-model fallback (rate-limit resilience)
+# If the primary model hits a 429, the next model in the list is tried.
+# Set MODEL env var to override the primary. Add more models to extend fallback chain.
 # -----------------------------
-DEFAULT_MODEL_NAME = "openai/gpt-4o-mini"
-MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
+_PRIMARY = os.getenv("MODEL", "openai/gpt-5-mini")
+FALLBACK_MODELS = list(dict.fromkeys([
+    _PRIMARY,
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-5-mini",
+    "microsoft/Phi-4-mini-instruct",
+    "deepseek/DeepSeek-R1",
+]))
 
-model = ChatOpenAI(
-    model=MODEL_NAME,
-    api_key=os.getenv("GITHUB_TOKEN"),
-    base_url="https://models.github.ai/inference"
-)
+# Limits to reduce token usage per call
+MAX_HISTORY = 2       # keep only the last N messages (trims unbounded history growth)
+MAX_TOOL_CHARS = 3000  # truncate long tool outputs before they enter the context
+
+# Bind tools lazily to each model (built once at import time)
+def _make_bound_model(name: str):
+    return ChatOpenAI(
+        model=name,
+        api_key=os.getenv("GITHUB_TOKEN"),
+        base_url="https://models.github.ai/inference"
+    ).bind_tools(tools)
 
 # Bind tools
 tools = [
@@ -61,8 +78,9 @@ tools = [
     list_ttrees,
 ]
 
-tools_by_name = {tool.name: tool for tool in tools}
-model_with_tools = model.bind_tools(tools)
+# Lazy-bound model dict. Models are bound the first time they're used to avoid
+# creating external client instances at import time (which requires API keys).
+_bound_models = {}
 
 # -----------------------------
 # State Definition
@@ -72,37 +90,69 @@ class MessagesState(TypedDict):
     llm_calls: int
 
 # -----------------------------
-# Tool Node
+# Tool Node — with output truncation
 # -----------------------------
 def tool_node(state: MessagesState):
     results = []
 
     for tool_call in state["messages"][-1].tool_calls:
-
-        tool = tools_by_name[tool_call["name"]]
+        tool_name = tool_call["name"]
+        tool = {t.name: t for t in tools}[tool_name]
         observation = tool.invoke(tool_call["args"])
+
+        content = str(observation)
+        if len(content) > MAX_TOOL_CHARS:
+            content = content[:MAX_TOOL_CHARS] + f"\n[...truncated {len(str(observation)) - MAX_TOOL_CHARS} chars]"
 
         results.append(
             ToolMessage(
-                content=str(observation),
+                content=content,
                 tool_call_id=tool_call["id"]
             )
         )
 
     return {"messages": results}
 
+
+def _trim_messages(messages):
+    """Keep only the last MAX_HISTORY messages; never start with a ToolMessage."""
+    if len(messages) <= MAX_HISTORY:
+        return messages
+    trimmed = messages[-MAX_HISTORY:]
+    # Shift forward past any leading ToolMessages to keep conversation structure valid
+    while trimmed and isinstance(trimmed[0], ToolMessage):
+        trimmed = trimmed[1:]
+    return trimmed
+
+
 # -----------------------------
-# LLM Node
+# LLM Node — with history trimming and model fallback
 # -----------------------------
 def llm_call(state: MessagesState):
-    response = model_with_tools.invoke(
-        [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    )
+    trimmed = _trim_messages(state["messages"])
+    prompt = [SystemMessage(content=SYSTEM_PROMPT)] + trimmed
 
-    return {
-        "messages": [response],
-        "llm_calls": state.get("llm_calls", 0) + 1
-    }
+    last_error = None
+    for model_name in FALLBACK_MODELS:
+        try:
+            if model_name not in _bound_models:
+                _bound_models[model_name] = _make_bound_model(model_name)
+
+            response = _bound_models[model_name].invoke(prompt)
+            return {
+                "messages": [response],
+                "llm_calls": state.get("llm_calls", 0) + 1,
+            }
+        except Exception as e:
+            err = str(e).lower()
+            if "429" in err or "rate" in err or "quota" in err or "ratelimit" in type(e).__name__.lower():
+                print(f"[RooAgent] {model_name} rate-limited, trying next model...")
+                last_error = e
+                continue
+            raise  # non-rate-limit errors propagate immediately
+
+    raise RuntimeError(f"All models rate-limited.") from last_error
+
 
 # -----------------------------
 # Routing
@@ -119,8 +169,7 @@ def should_continue(state: MessagesState):
 builder = StateGraph(MessagesState)
 
 builder.add_node("llm_call", llm_call)
-builder.add_node("tool_node",ToolNode(tools,handle_tool_errors=True)) 
-                                      # tool_node)
+builder.add_node("tool_node", ToolNode(tools, handle_tool_errors=True))
 
 builder.add_edge(START, "llm_call")
 builder.add_conditional_edges("llm_call", should_continue, ["tool_node", END])
@@ -132,7 +181,8 @@ agent = builder.compile()
 # CLI
 # -----------------------------
 def main():
-    print(f"\nROOT Physics Analysis Agent using ({MODEL_NAME})")
+    print(f"\nROOT Physics Analysis Agent")
+    print(f"Primary model: {_PRIMARY}  |  Fallbacks: {FALLBACK_MODELS[1:]}")
     print("Type 'exit' to quit\n")
 
     state = {"messages": [], "llm_calls": 0}
@@ -144,7 +194,7 @@ def main():
             print("Thanks for using RooAgent!")
             break
 
-        # FIXED BUG HERE
         state["messages"].append(HumanMessage(content=user_input))
 
         state = agent.invoke(state)
+

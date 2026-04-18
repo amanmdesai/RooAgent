@@ -4,6 +4,17 @@ from langchain_core.tools import tool
 import re
 
 
+# Module-level counter ensures every TCanvas gets a unique name, preventing
+# ROOT from silently deleting an existing canvas (and its objects) when a new
+# one with the same name is created.
+_canvas_counter = [0]
+
+
+def _unique_canvas_name(base: str) -> str:
+    _canvas_counter[0] += 1
+    return f"{base}_{_canvas_counter[0]}"
+
+
 def _safe_get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     """Safely obtain vector branch names; return empty list if ROOT/imports unavailable."""
     try:
@@ -160,7 +171,7 @@ def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
     if not hist_list:
         return "No histograms created."
 
-    canvas, upper_pad, lower_pad = _create_plot_pads(canvas_name, canvas_title, show_ratio)
+    canvas, upper_pad, lower_pad = _create_plot_pads(_unique_canvas_name(canvas_name), canvas_title, show_ratio)
     draw_pad = upper_pad if upper_pad else canvas
     draw_pad.cd()
 
@@ -248,7 +259,7 @@ def draw_1d_histogram(
     h.GetXaxis().SetLabelSize(0.04)
     h.GetYaxis().SetLabelSize(0.04)
 
-    canv = ROOT.TCanvas("c1", "1D Histogram", 900, 700)
+    canv = ROOT.TCanvas(_unique_canvas_name("c1"), "1D Histogram", 900, 700)
     if logy:
         canv.SetLogy(True)
 
@@ -283,7 +294,7 @@ def plot_tree_variable(file_path: str, tree_name: str, variable: str,
     h.GetXaxis().SetTitle(variable)
     h.GetYaxis().SetTitle("Normalized Events" if normalize else "Events")
 
-    canv = ROOT.TCanvas("c1", "", 900, 700)
+    canv = ROOT.TCanvas(_unique_canvas_name("c1"), "", 900, 700)
     h.Draw("HIST")
     canv.Update()
     canv.SaveAs(output_pdf)
@@ -535,7 +546,7 @@ def plot_signal_vs_backgrounds(
         legend.AddEntry(h, label, bkg_legend_opt)
 
     # --- Canvas and pads ---
-    canvas, upper_pad, lower_pad = _create_plot_pads("c_sig_bkg", "Signal vs Backgrounds", show_ratio)
+    canvas, upper_pad, lower_pad = _create_plot_pads(_unique_canvas_name("c_sig_bkg"), "Signal vs Backgrounds", show_ratio)
     draw_pad = upper_pad if upper_pad else canvas
     draw_pad.cd()
 
@@ -743,7 +754,7 @@ def draw_2d_histogram(
     if normalize and h.Integral() > 0:
         h.Scale(1.0 / h.Integral())
 
-    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
+    canv = ROOT.TCanvas(_unique_canvas_name("c1"), "2D Histogram", 900, 700)
 
     h.GetXaxis().SetTitle(xlabel)
     h.GetYaxis().SetTitle(ylabel)
@@ -805,7 +816,7 @@ def draw_2d_histogram_from_tree(
         "goff"
     )
 
-    canv = ROOT.TCanvas("c1", "2D Histogram", 900, 700)
+    canv = ROOT.TCanvas(_unique_canvas_name("c1"), "2D Histogram", 900, 700)
 
     h2.GetXaxis().SetTitle(xlabel if xlabel else x_branch)
     h2.GetYaxis().SetTitle(ylabel if ylabel else y_branch)

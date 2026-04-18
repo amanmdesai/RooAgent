@@ -7,6 +7,9 @@ from .tfile import *
 from .utils import *
 
 
+# ================= ROOT BATCH MODE =================
+ROOT.gROOT.SetBatch(True)
+
 # ================= ROOT STYLE =================
 ROOT.gStyle.SetOptStat(0)
 
