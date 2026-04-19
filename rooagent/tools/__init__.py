@@ -1,5 +1,6 @@
 from .fit_tools import *
 from .histogram_tools import *
+from .roostat import *
 from .converter import *
 from .plot_tools import *
 from .rdataframe_tools import *

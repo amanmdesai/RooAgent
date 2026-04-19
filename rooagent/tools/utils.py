@@ -37,13 +37,19 @@ def rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> s
     mode:
         "any" -> ROOT::VecOps::Any()
         "all" -> ROOT::VecOps::All()
-
-    Example:
-        jet_pt > 30 -> ROOT::VecOps::Any(jet_pt > 30)
+    
+    The function normalises boolean literals and logical operators to C++ and wraps
+    scalar comparisons on vector branches using the requested reducer.
     """
 
     if mode not in ["any", "all"]:
         return cut
+
+    # Normalize Python-style literals/operators to C++ for RDataFrame
+    cut = re.sub(r"\bTrue\b", "true", cut)
+    cut = re.sub(r"\bFalse\b", "false", cut)
+    cut = re.sub(r"\band\b", "&&", cut)
+    cut = re.sub(r"\bor\b", "||", cut)
 
     reducer = "Any" if mode == "any" else "All"
 

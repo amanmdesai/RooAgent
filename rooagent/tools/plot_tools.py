@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List, Optional
 import ROOT
 from langchain_core.tools import tool
@@ -33,6 +34,12 @@ def _rewrite_vector_cut_local(cut: str, vector_vars: List[str], mode: str = "any
     """
     if mode not in ["any", "all"]:
         return cut
+
+    # Normalize Python boolean literals → C++ and logical operators → C++
+    cut = re.sub(r"\bTrue\b", "true", cut)
+    cut = re.sub(r"\bFalse\b", "false", cut)
+    cut = re.sub(r"\band\b", "&&", cut)
+    cut = re.sub(r"\bor\b", "||", cut)
 
     reducer = "Any" if mode == "any" else "All"
 
@@ -137,6 +144,26 @@ def _resolve_weight_branch(df, weight_branch: str) -> str:
 
     columns = [str(c) for c in df.GetColumnNames()]
     return weight_branch if weight_branch in columns else ""
+def _maybe_rebin_hist(hist, rebin: int):
+    """Return a rebinned histogram when `rebin` > 1, otherwise return original.
+
+    Uses TH1.Rebin to create a new histogram with grouped bins. If `rebin`
+    is 1 or invalid, the original histogram is returned unchanged.
+    """
+    try:
+        r = int(rebin) if rebin is not None else 1
+    except Exception:
+        r = 1
+    if r <= 1 or hist is None:
+        return hist
+    newname = f"{hist.GetName()}_rebin{r}"
+    try:
+        hreb = hist.Rebin(r, newname)
+        ROOT.SetOwnership(hreb, False)
+        hreb.SetDirectory(0)
+        return hreb
+    except Exception:
+        return hist
 
 
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str, ratio_hists: List = None):
@@ -220,6 +247,126 @@ def _draw_overlay_plot(hist_list: List, legend, output_pdf: str, x_title: str,
     return output_pdf
 
 
+@tool
+def plot_1d(
+    mode: str,
+    output_pdf: str,
+    file_path: str = "",
+    file_paths: Optional[List[str]] = None,
+    tree_name: str = "",
+    variable: str = "",
+    variables: Optional[List[str]] = None,
+    hist_name: str = "",
+    hist_names: Optional[List[str]] = None,
+    legends: Optional[List[str]] = None,
+    bins: int = 50,
+    xmin: float = 0.0,
+    xmax: float = 1.0,
+    xlabel: str = "",
+    ylabel: str = "Events",
+    normalize: bool = False,
+    logy: bool = False,
+    show_ratio: bool = False,
+    weight_branch: str = "",
+    cuts: Optional[List[str]] = None,
+    rebin: int = 1,
+    vector_mode: str = "all",
+) -> str:
+    """Unified 1D plotting tool.
+
+    Modes
+    -----
+    - `hist`: draw one TH1 from one file.
+    - `tree`: draw one branch from one tree/file.
+    - `tree_compare`: compare multiple tree variables/files.
+    - `hist_compare`: compare multiple existing TH1 histograms.
+
+    Returns
+    -------
+    str
+        Saved PDF path message or a clear error string.
+    """
+    mode_key = (mode or "").strip().lower()
+
+    if mode_key == "hist":
+        if not file_path or not hist_name:
+            return "Error: file_path and hist_name are required for mode='hist'."
+        return draw_1d_histogram.invoke(
+            {
+                "file_path": file_path,
+                "hist_name": hist_name,
+                "output_pdf": output_pdf,
+                "xlabel": xlabel,
+                "ylabel": ylabel,
+                "logy": logy,
+                "rebin": rebin,
+                "normalize": normalize,
+            }
+        )
+
+    if mode_key == "tree":
+        if not file_path or not tree_name or not variable:
+            return "Error: file_path, tree_name, and variable are required for mode='tree'."
+        return plot_tree_variable.invoke(
+            {
+                "file_path": file_path,
+                "tree_name": tree_name,
+                "variable": variable,
+                "bins": bins,
+                "xmin": xmin,
+                "xmax": xmax,
+                "output_pdf": output_pdf,
+                "normalize": normalize,
+                "weight_branch": weight_branch,
+                "rebin": rebin,
+                "cuts": cuts,
+                "vector_mode": vector_mode,
+            }
+        )
+
+    if mode_key == "tree_compare":
+        if not file_paths or not tree_name or not variables or not legends:
+            return "Error: file_paths, tree_name, variables, and legends are required for mode='tree_compare'."
+        return compare_tree_variables.invoke(
+            {
+                "file_paths": file_paths,
+                "tree_name": tree_name,
+                "variables": variables,
+                "bins": bins,
+                "xmin": xmin,
+                "xmax": xmax,
+                "legends": legends,
+                "output_pdf": output_pdf,
+                "normalize": normalize,
+                "show_ratio": show_ratio,
+                "rebin": rebin,
+                "weight_branch": weight_branch,
+                "cuts": cuts,
+                "vector_mode": vector_mode,
+            }
+        )
+
+    if mode_key == "hist_compare":
+        if not file_paths or not hist_names or not legends:
+            return "Error: file_paths, hist_names, and legends are required for mode='hist_compare'."
+        return draw_histograms_same_canvas.invoke(
+            {
+                "file_paths": file_paths,
+                "hist_names": hist_names,
+                "legends": legends,
+                "output_pdf": output_pdf,
+                "xlabel": xlabel,
+                "ylabel": ylabel,
+                "logy": logy,
+                "normalize": normalize,
+                "rebin": rebin,
+                "show_ratio": show_ratio,
+            }
+        )
+
+    return "Error: unsupported mode. Use one of: hist, tree, tree_compare, hist_compare."
+
+
 # ================= DRAW SINGLE 1D HISTOGRAM =================
 @tool
 def draw_1d_histogram(
@@ -230,9 +377,36 @@ def draw_1d_histogram(
     ylabel: str = "Events",
     logy: bool = False,
     normalize: bool = False,
+    rebin: int = 1,
     line_color: int = ROOT.kBlue+1
 ) -> str:
-    """Draw a 1D histogram stored in a ROOT file and save as PDF."""
+    """Draw a 1D histogram stored in a ROOT file and save it as a PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the input ROOT file.
+    hist_name : str
+        Name of the TH1 object inside the ROOT file.
+    output_pdf : str
+        Output path for the saved PDF.
+    xlabel : str
+        X-axis label for the plot.
+    ylabel : str
+        Y-axis label for the plot.
+    logy : bool
+        If True, use a logarithmic y-axis.
+    normalize : bool
+        If True, scale the histogram to unit integral before drawing.
+    line_color : int
+        ROOT color constant for the line.
+
+    Returns
+    -------
+    str
+        Success message or an error string when the file or histogram
+        cannot be read.
+    """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: Could not open file {file_path}"
@@ -244,6 +418,8 @@ def draw_1d_histogram(
 
     h.SetDirectory(0)
     ROOT.SetOwnership(h, False)
+    # Optionally rebin the histogram when requested
+    h = _maybe_rebin_hist(h, rebin)
 
     if normalize and h.Integral() > 0:
         h.Scale(1.0 / h.Integral())
@@ -274,17 +450,60 @@ def draw_1d_histogram(
 def plot_tree_variable(file_path: str, tree_name: str, variable: str,
                        bins: int, xmin: float, xmax: float,
                        output_pdf: str,
+                       rebin: int = 1,
                        normalize: bool = False,
-                       weight_branch: str = "") -> str:
-    """Build and draw a 1D histogram from a TTree branch, with optional event weights, and save as PDF."""
+                       weight_branch: str = "",
+                       cuts: Optional[List[str]] = None,
+                       vector_mode: str = "all") -> str:
+    """Build and draw a 1D histogram from a TTree branch and save as a PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the input ROOT file.
+    tree_name : str
+        Name of the TTree to read.
+    variable : str
+        Branch name to histogram.
+    bins, xmin, xmax : int/float
+        Binning parameters for the histogram.
+    output_pdf : str
+        Path where the PDF will be written.
+    normalize : bool
+        If True, normalize the histogram to unit integral.
+    weight_branch : str
+        Name of the MC weight branch to use for MC histograms. If empty,
+        unit weights are used (and data is never weighted).
+    cuts : list of str, optional
+        Selection cuts applied BEFORE filling the histogram. Use C++ syntax
+        (&&, ||, true, false). All event-selection cuts should be forwarded here.
+    vector_mode : str
+        Reducer mode for vector branches when used in cuts: 'any' or 'all'.
+
+    Returns
+    -------
+    str
+        Success message or an error string.
+    """
     df = ROOT.RDataFrame(tree_name, file_path)
+
+    if cuts:
+        vector_vars = _safe_get_vector_branches(file_path, tree_name)
+        for cut in cuts:
+            df = df.Filter(_rewrite_vector_cut_local(cut, vector_vars, vector_mode))
+
     resolved_weight = _resolve_weight_branch(df, weight_branch)
     if resolved_weight:
-        hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable, resolved_weight)
+        wname = resolved_weight
     else:
-        hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
+        wname = "__rooagent_unit_weight"
+        df = df.Define(wname, "1.0")
+
+    hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable, wname)
     h = hist_ptr.GetValue()
     ROOT.SetOwnership(h, False)
+    # Optionally rebin
+    h = _maybe_rebin_hist(h, rebin)
     
     if normalize and h.Integral() > 0:
         h.Scale(1.0 / h.Integral())
@@ -308,8 +527,43 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
                            legends: List[str], output_pdf: str,
                            normalize: bool = False,
                            show_ratio: bool = False,
-                           weight_branch: str = "") -> str:
-    """Compare multiple TTree variable distributions overlaid on one canvas, with optional event weights."""
+                           rebin: int = 1,
+                           weight_branch: str = "",
+                           cuts: Optional[List[str]] = None,
+                           vector_mode: str = "all") -> str:
+    """Compare multiple TTree variable distributions overlaid on a single canvas
+    and save as a PDF.
+
+    Parameters
+    ----------
+    file_paths : list[str]
+        List of input ROOT file paths to histogram (one per variable entry).
+    tree_name : str
+        Name of the TTree in each file.
+    variables : list[str]
+        List of branch names to histogram (one per file).
+    bins, xmin, xmax : int/float
+        Binning specification for the histograms.
+    legends : list[str]
+        Labels for the legend, one per file.
+    output_pdf : str
+        Path to write the PDF.
+    normalize : bool
+        If True, scale each histogram to unit integral before drawing.
+    show_ratio : bool
+        If True, adds a ratio panel below the main plot (each histogram divided by the first).
+    weight_branch : str
+        Name of MC weight branch to apply for MC inputs. Leave empty for data.
+    cuts : list[str], optional
+        Selection cuts to apply before histogramming; use C++ syntax.
+    vector_mode : str
+        Reducer used for vector-branch cuts: 'any' or 'all'.
+
+    Returns
+    -------
+    str
+        Success message or an error string.
+    """
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
 
@@ -319,13 +573,22 @@ def compare_tree_variables(file_paths: List[str], tree_name: str,
 
     for i, (fpath, var, label) in enumerate(zip(file_paths, variables, legends)):
         df = ROOT.RDataFrame(tree_name, fpath)
+        if cuts:
+            vector_vars = _safe_get_vector_branches(fpath, tree_name)
+            for cut in cuts:
+                df = df.Filter(_rewrite_vector_cut_local(cut, vector_vars, vector_mode))
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
-            hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var, resolved_weight)
+            wname = resolved_weight
         else:
-            hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var)
+            wname = "__rooagent_unit_weight"
+            df = df.Define(wname, "1.0")
+
+        hist_ptr = df.Histo1D((f"h{i}", var, bins, xmin, xmax), var, wname)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
+        # Optionally rebin each histogram
+        h = _maybe_rebin_hist(h, rebin)
         h.SetDirectory(0)
 
         if normalize and h.Integral() > 0:
@@ -373,23 +636,51 @@ def plot_signal_vs_backgrounds(
     plot_data: bool = False,
     normalize: bool = False,
     show_ratio: bool = False,
+    rebin: int = 1,
     weight_branch: str = "",
     cuts: Optional[List[str]] = None,
     vector_mode: str = "all",
-    apply_cuts_before_plot: bool = True
+    apply_cuts_before_plot: bool = False
 ) -> str:
-    """Plot signal, backgrounds, and optional data in HEP style with optional event weights.
+    """Plot signal, background, and optional data histograms in HEP style and save as a PDF.
 
-    Stacking behaviour:
-      - With data (and normalize=False): backgrounds are stacked first, then signals stacked on
-        top (hatched fill to distinguish from backgrounds). Data is drawn last as black
-        filled-circle markers (PE1) — it is never part of the stack.
-        Ratio panel shows Data / total-MC (backgrounds + signal).
-      - Without data (or normalize=True): all processes are drawn as overlaid line histograms
-        with no stacking. Ratio panel shows Signal / Background.
+    This tool produces publication-style plots with optional stacking of backgrounds,
+    hatched signal fills, optional data overlay, and an optional ratio panel. When
+    used in analysis flows, always forward the same event-selection cuts used in the
+    cutflow/significance calculations via the `cuts` parameter.
 
-    Legend order: data -> signal (reverse stack) -> backgrounds (reverse stack).
+    Parameters
+    ----------
+    signal_file, signal_files : str or list[str]
+        One or more signal ROOT files. At least one signal source is required.
+    background_files : list[str]
+        One or more background ROOT files. Backgrounds are summed/stacked as requested.
+    tree_name : str
+        Name of the TTree to read in each file.
+    variable : str
+        Branch name to histogram.
+    bins, xmin, xmax : int/float
+        Binning for the histogram.
+    output_pdf : str
+        Output path for the resulting PDF.
+    weight_branch : str
+        Name of the MC weight branch applied to all MC inputs. Leave empty for data.
+    cuts : list[str], optional
+        Selection cuts applied to each process before histogramming; use C++ syntax
+        (&&, ||, true, false).
+    show_ratio : bool
+        If True, add a ratio panel (Data/MC or Sig/Bkg) below the main plot.
+    normalize : bool
+        If True, draw normalized line-overlays instead of stacked counts.
+
+    Returns
+    -------
+    str
+        Success message or an error string.
     """
+
+    if apply_cuts_before_plot and not cuts:
+        return "Error: apply_cuts_before_plot=True but no 'cuts' provided. Please provide a non-empty cuts list."
     signal_paths = _parse_file_inputs(signal_file, signal_files)
     if not signal_paths:
         return "Error: at least one signal file must be provided via signal_file or signal_files."
@@ -400,15 +691,15 @@ def plot_signal_vs_backgrounds(
 
     if signal_labels is None:
         if len(signal_paths) == 1:
-            signal_labels = [signal_label]
+            signal_labels = [Path(signal_paths[0]).stem if signal_label == "Signal" else signal_label]
         else:
-            signal_labels = [f"{signal_label} {i + 1}" for i in range(len(signal_paths))]
+            signal_labels = [Path(p).stem for p in signal_paths]
 
     if len(signal_labels) != len(signal_paths):
         return "Error: number of signal_labels must match number of signal files."
 
     if background_labels is None:
-        background_labels = [f"Background {i + 1}" for i in range(len(background_paths))]
+        background_labels = [Path(p).stem for p in background_paths]
 
     if len(background_labels) != len(background_paths):
         return "Error: number of background_labels must match number of background_files."
@@ -437,11 +728,16 @@ def plot_signal_vs_backgrounds(
 
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
-            hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
+            wname = resolved_weight
         else:
-            hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable)
+            wname = "__rooagent_unit_weight"
+            df = df.Define(wname, "1.0")
+
+        hist_ptr = df.Histo1D((f"h_sigbkg_bkg_{i}", variable, bins, xmin, xmax), variable, wname)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
+        # Optionally rebin background histograms
+        h = _maybe_rebin_hist(h, rebin)
         h.SetDirectory(0)
         fill_color = background_fill_colors[i % len(background_fill_colors)]
         h.SetFillColor(fill_color)
@@ -461,11 +757,16 @@ def plot_signal_vs_backgrounds(
 
         resolved_weight = _resolve_weight_branch(df, weight_branch)
         if resolved_weight:
-            hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable, resolved_weight)
+            wname = resolved_weight
         else:
-            hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable)
+            wname = "__rooagent_unit_weight"
+            df = df.Define(wname, "1.0")
+
+        hist_ptr = df.Histo1D((f"h_sigbkg_sig_{i}", variable, bins, xmin, xmax), variable, wname)
         h = hist_ptr.GetValue()
         ROOT.SetOwnership(h, False)
+        # Optionally rebin signal histograms
+        h = _maybe_rebin_hist(h, rebin)
         h.SetDirectory(0)
         line_color = signal_line_colors[i % len(signal_line_colors)]
         # Default style: line only (used when no data / normalize mode)
@@ -485,13 +786,14 @@ def plot_signal_vs_backgrounds(
                 safe_cut = _rewrite_vector_cut_local(cut, vector_vars, vector_mode)
                 df = df.Filter(safe_cut)
 
-        resolved_weight = _resolve_weight_branch(df, weight_branch)
-        if resolved_weight:
-            hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable, resolved_weight)
-        else:
-            hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable)
+        # Data should not be weighted by MC weights; always use unit weight for data overlay
+        wname = "__rooagent_unit_weight"
+        df = df.Define(wname, "1.0")
+        hist_ptr = df.Histo1D(("h_sigbkg_data", variable, bins, xmin, xmax), variable, wname)
         data_hist = hist_ptr.GetValue()
         ROOT.SetOwnership(data_hist, False)
+        # Optionally rebin data histogram
+        data_hist = _maybe_rebin_hist(data_hist, rebin)
         data_hist.SetDirectory(0)
         data_hist.SetFillStyle(0)
         data_hist.SetMarkerStyle(20)
@@ -601,8 +903,22 @@ def plot_signal_vs_backgrounds(
         data_max = data_hist.GetMaximum() if data_hist else 0.0
         stack.SetMaximum(max(stack_max, data_max) * 1.35)
 
+        # --- MC stat uncertainty hatched band (drawn on top of stack, below data) ---
+        all_mc_hists = background_hists + signal_hists
+        mc_stat_band = all_mc_hists[0].Clone("h_mc_stat_band")
+        mc_stat_band.SetDirectory(0)
+        ROOT.SetOwnership(mc_stat_band, False)
+        for h in all_mc_hists[1:]:
+            mc_stat_band.Add(h)
+        mc_stat_band.SetFillStyle(3354)   # hatched pattern
+        mc_stat_band.SetFillColor(ROOT.kGray + 2)
+        mc_stat_band.SetLineColor(ROOT.kGray + 2)
+        mc_stat_band.SetMarkerSize(0)
+        mc_stat_band.Draw("E2 SAME")
+
         # Data is a pure overlay — drawn last, on top of everything
-        data_hist.Draw("PE1 SAME")
+        if data_hist:
+            data_hist.Draw("PE1 SAME")
 
     legend.SetFillStyle(0)
     legend.Draw()
@@ -619,12 +935,27 @@ def plot_signal_vs_backgrounds(
 
         if data_hist:
             # Data/MC ratio: standard HEP publication convention
+            # Use TH1.Divide(num, denom) with both hists to propagate stat errors correctly
             ratio = data_hist.Clone("h_data_mc_ratio")
             ratio.SetDirectory(0)
             ROOT.SetOwnership(ratio, False)
-            ratio.Divide(total_mc)
+            ratio.Divide(data_hist, total_mc, 1.0, 1.0, "B")
             ratio_draw_opt = "PE1"
             ratio_y_title = "Data/MC"
+
+            # MC stat uncertainty band in ratio panel (total_mc / total_mc = 1 ± rel err)
+            ratio_mc_band = total_mc.Clone("h_ratio_mc_band")
+            ratio_mc_band.SetDirectory(0)
+            ROOT.SetOwnership(ratio_mc_band, False)
+            for b in range(1, ratio_mc_band.GetNbinsX() + 1):
+                c = ratio_mc_band.GetBinContent(b)
+                e = ratio_mc_band.GetBinError(b)
+                ratio_mc_band.SetBinContent(b, 1.0)
+                ratio_mc_band.SetBinError(b, e / c if c > 0 else 0.0)
+            ratio_mc_band.SetFillStyle(3354)
+            ratio_mc_band.SetFillColor(ROOT.kGray + 2)
+            ratio_mc_band.SetLineColor(ROOT.kGray + 2)
+            ratio_mc_band.SetMarkerSize(0)
         else:
             # No data: Signal/Bkg
             ratio = signal_hists[0].Clone("h_sig_bkg_ratio")
@@ -633,11 +964,20 @@ def plot_signal_vs_backgrounds(
             ratio.Divide(total_mc)
             ratio_draw_opt = "HIST"
             ratio_y_title = "Sig/Bkg"
+            ratio_mc_band = None
 
         lower_pad.cd()
         _style_ratio_hist(ratio, variable)
         ratio.GetYaxis().SetTitle(ratio_y_title)
-        ratio.Draw(ratio_draw_opt)
+        if ratio_mc_band:
+            ratio_mc_band.GetXaxis().SetTitle(variable)
+            ratio_mc_band.GetYaxis().SetTitle(ratio_y_title)
+            ratio_mc_band.SetMinimum(0.0)
+            ratio_mc_band.SetMaximum(2.0)
+            ratio_mc_band.Draw("E2")
+            ratio.Draw(f"{ratio_draw_opt} SAME")
+        else:
+            ratio.Draw(ratio_draw_opt)
 
         x_axis = ratio.GetXaxis()
         unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
@@ -662,9 +1002,31 @@ def draw_histograms_same_canvas(
     ylabel: str = "Events",
     logy: bool = False,
     normalize: bool = False,
-    show_ratio: bool = False
+    show_ratio: bool = False,
+    rebin: int = 1
 ) -> str:
-    """Overlay existing histograms from multiple ROOT files on one canvas."""
+    """Overlay TH1 histograms from multiple ROOT files on a single canvas and save as PDF.
+
+    Parameters
+    ----------
+    file_paths : list[str]
+        List of ROOT file paths containing the histograms.
+    hist_names : list[str]
+        Names of the TH1 objects to draw from each file.
+    legends : list[str]
+        Labels for the legend, one per histogram.
+    output_pdf : str
+        Path to write the combined PDF.
+    xlabel, ylabel, logy, normalize : options
+        Drawing options controlling axis labels, log scale and normalization.
+    show_ratio : bool
+        If True, add a ratio panel below the main plot (each histogram divided by the first).
+
+    Returns
+    -------
+    str
+        Success message or an error string.
+    """
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
 
@@ -692,6 +1054,8 @@ def draw_histograms_same_canvas(
 
         h.SetDirectory(0)
         ROOT.SetOwnership(h, False)
+        # Optionally rebin histograms loaded from files
+        h = _maybe_rebin_hist(h, rebin)
 
         if normalize and h.Integral() > 0:
             h.Scale(1.0 / h.Integral())
@@ -738,7 +1102,28 @@ def draw_2d_histogram(
     color_palette: int = 55,
     normalize: bool = False
 ) -> str:
-    """Draw a 2D histogram from a ROOT file and save as PDF."""
+    """Draw a 2D TH2 histogram from a ROOT file and save it as a PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the ROOT file containing the TH2.
+    hist_name : str
+        Name of the TH2 object inside the file.
+    output_pdf : str
+        Output path for the saved PDF.
+    xlabel, ylabel : str
+        Axis labels for the plot.
+    color_palette : int
+        ROOT palette index to use when drawing the COLZ plot.
+    normalize : bool
+        If True, scale the histogram to unit integral before drawing.
+
+    Returns
+    -------
+    str
+        Success message or an error string.
+    """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: Could not open file {file_path}"
@@ -792,7 +1177,30 @@ def draw_2d_histogram_from_tree(
     ylabel: str = "",
     color_palette: int = 55
 ) -> str:
-    """Build a 2D histogram from two TTree branches and save a COLZ plot."""
+    """Build a 2D histogram from two TTree branches and save a COLZ plot as PDF.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the input ROOT file containing the TTree.
+    tree_name : str
+        Name of the TTree inside the file.
+    x_branch, y_branch : str
+        Branch names to use for the X and Y axes respectively.
+    output_pdf : str
+        Output path for the saved PDF.
+    bins_x, xmin, xmax, bins_y, ymin, ymax : int/float
+        Binning parameters for the histogram.
+    xlabel, ylabel : str
+        Axis labels for the plot.
+    color_palette : int
+        ROOT palette index for COLZ drawing.
+
+    Returns
+    -------
+    str
+        Success message or an error string.
+    """
 
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():

@@ -1,20 +1,131 @@
-from pydantic import BaseModel
+import array as _arr
 import ROOT
 from langchain_core.tools import tool
 
 
-@tool
-def get_histogram_stats(file_path: str, hist_name: str) -> str:
-    """USE WHEN: quick stats for a TH1 histogram (mean, RMS, entries)."""
+# ─── Private helpers ──────────────────────────────────────────────────────────
+
+def _load_histogram(file_path: str, hist_name: str):
+    """Open *file_path*, fetch *hist_name*, detach it and close the file.
+    Returns (histogram, error_msg).  On success error_msg is None."""
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
-        return f"Error: could not open file {file_path}."
+        return None, f"Error: could not open file {file_path}."
     h = f.Get(hist_name)
     if not h:
         f.Close()
-        return f"Error: histogram '{hist_name}' not found in file {file_path}."
+        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+    f.Close()
+    return h, None
+
+
+def _maybe_rebin_hist(hist, rebin: int):
+    """Return a rebinned histogram when `rebin` > 1, otherwise return original.
+
+    Uses TH1.Rebin to create a new histogram with grouped bins. If `rebin`
+    is 1 or invalid, the original histogram is returned unchanged.
+    """
+    try:
+        r = int(rebin) if rebin is not None else 1
+    except Exception:
+        r = 1
+    if r <= 1 or hist is None:
+        return hist
+    newname = f"{hist.GetName()}_rebin{r}"
+    try:
+        hreb = hist.Rebin(r, newname)
+        ROOT.SetOwnership(hreb, False)
+        hreb.SetDirectory(0)
+        return hreb
+    except Exception:
+        return hist
+
+
+# ─── Public tools ─────────────────────────────────────────────────────────────
+
+@tool
+def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
+    """Return quick statistics for a TH1 histogram: mean, RMS, and entries.
+
+    Parameters
+    ----------
+    rebin : int
+        Optional rebin factor (default 1 = no rebin). When >1 the histogram
+        is rebinned before computing the stats.
+    """
+    h, err = _load_histogram(file_path, hist_name)
+    if err:
+        return err
+
+    # Optionally rebin before computing statistics
+    h = _maybe_rebin_hist(h, rebin)
+
     mean = h.GetMean()
     rms = h.GetRMS()
     entries = int(h.GetEntries())
-    f.Close()
     return f"{hist_name} -> Mean: {mean:.3f}, RMS: {rms:.3f}, Entries: {entries}"
+
+
+@tool
+def histogram_integral(
+    file_path: str,
+    hist_name: str,
+    x_low: float,
+    x_high: float,
+    include_overflow: bool = False,
+    rebin: int = 1,
+) -> str:
+    """Integrate a TH1 between x_low and x_high, returning count ± stat error."""
+    h, err = _load_histogram(file_path, hist_name)
+    if err:
+        return err
+
+    # Optionally rebin before computing integrals
+    h = _maybe_rebin_hist(h, rebin)
+
+    nb = h.GetNbinsX()
+    ax = h.GetXaxis()
+    axis_lo = ax.GetXmin()
+    axis_hi = ax.GetXmax()
+
+    # ── Validate requested range ───────────────────────────────────────────
+    if x_low >= x_high:
+        return f"Error: x_low ({x_low}) must be less than x_high ({x_high})."
+    if x_low >= axis_hi or x_high <= axis_lo:
+        return (f"Error: requested range [{x_low:.5g}, {x_high:.5g}] is entirely "
+                f"outside histogram axis [{axis_lo:.5g}, {axis_hi:.5g}].")
+
+    # Warn (but continue) when the range is only partially inside
+    warn = ""
+    if x_low < axis_lo:
+        warn = f" [warn: x_low clipped to axis min {axis_lo:.5g}]"
+        x_low = axis_lo
+    if x_high > axis_hi:
+        warn += f" [warn: x_high clipped to axis max {axis_hi:.5g}]"
+        x_high = axis_hi
+
+    bin_lo = ax.FindBin(x_low)
+    bin_hi = ax.FindBin(x_high)
+
+    # If x_high falls exactly on a lower bin edge, exclude that extra bin
+    if ax.GetBinLowEdge(bin_hi) == x_high and bin_hi > 1:
+        bin_hi -= 1
+
+    lo_clamp = 0 if include_overflow else 1
+    hi_clamp = nb + 1 if include_overflow else nb
+    bin_lo = max(bin_lo, lo_clamp)
+    bin_hi = min(bin_hi, hi_clamp)
+
+    if bin_lo > bin_hi:
+        return f"Error: effective bin range is empty after clamping (bin_lo={bin_lo} > bin_hi={bin_hi})."
+    e_ref = _arr.array('d', [0.0])
+    integral = h.IntegralAndError(bin_lo, bin_hi, e_ref)
+    error_val = e_ref[0]
+
+    x_actual_lo = ax.GetBinLowEdge(bin_lo)
+    x_actual_hi = ax.GetBinUpEdge(bin_hi)
+
+    return (f"Integral '{hist_name}' x=[{x_actual_lo:.5g},{x_actual_hi:.5g}]"
+            f" bins=[{bin_lo},{bin_hi}]: {integral:.6g}±{error_val:.6g}{warn}")
