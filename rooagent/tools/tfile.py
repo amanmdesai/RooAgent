@@ -1,77 +1,7 @@
 from langchain_core.tools import tool
 import ROOT
-import os
 from typing import List, Optional
-
-
-# -------------------------
-# Helper utilities
-# -------------------------
-def _get_root_files(directory: str = ".") -> List[str]:
-    """Return list of .root files in the given directory (non-recursive)."""
-    try:
-        return [f for f in os.listdir(directory) if f.lower().endswith(".root")]
-    except Exception:
-        return []
-
-
-def _open_root_file(file_path: str) -> Optional[ROOT.TFile]:
-    """
-    Safely open a ROOT file. Returns None if it cannot be opened.
-    Wrapper around ROOT.TFile.Open to centralize Zombie checks.
-    """
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
-        try:
-            if f:
-                f.Close()
-        except Exception:
-            pass
-        return None
-    return f
-
-
-def _get_trees(root_file: ROOT.TFile) -> List[str]:
-    """Return a list of TTree names inside the given open ROOT file."""
-    trees: List[str] = []
-    try:
-        for key in root_file.GetListOfKeys():
-            obj = key.ReadObj()
-            # Some objects may be directories -> we still check but only add TTrees
-            if obj and hasattr(obj, "InheritsFrom") and obj.InheritsFrom("TTree"):
-                trees.append(obj.GetName())
-    except Exception:
-        # if anything unexpected occurs, return what we've found so far
-        pass
-    return trees
-
-
-def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
-    """
-    Recursively list top-level objects inside a ROOT directory (TDirectory/TFile).
-    Returns strings "path/name (Class)".
-    """
-    entries: List[str] = []
-    try:
-        for key in root_dir.GetListOfKeys():
-            obj = key.ReadObj()
-            if obj is None:
-                continue
-            name = obj.GetName()
-            class_name = obj.ClassName() if hasattr(obj, "ClassName") else type(obj).__name__
-            full = f"{prefix}{name} ({class_name})"
-            entries.append(full)
-
-            # If it's a directory, recurse
-            if obj.InheritsFrom("TDirectory") if hasattr(obj, "InheritsFrom") else False:
-                try:
-                    entries.extend(_list_objects_recursive(obj, prefix=f"{prefix}{name}/"))
-                except Exception:
-                    # on recursion error, continue
-                    pass
-    except Exception:
-        pass
-    return entries
+from .utils import _get_root_files, _open_root_file, _get_trees, _list_objects_recursive
 
 
 # -------------------------

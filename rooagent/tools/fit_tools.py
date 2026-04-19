@@ -1,14 +1,6 @@
 import ROOT
 from langchain_core.tools import tool
-
-
-# Module-level counter for unique canvas names
-_canvas_counter = [0]
-
-
-def _unique_canvas_name(base: str) -> str:
-    _canvas_counter[0] += 1
-    return f"{base}_{_canvas_counter[0]}"
+from .utils import _unique_canvas_name
 
 
 @tool

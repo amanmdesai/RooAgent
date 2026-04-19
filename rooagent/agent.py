@@ -21,6 +21,7 @@ Hard rules (follow exactly):
 - Validate inputs before use: call `inspect_root_data` with the appropriate mode (`files`, `summary`, `trees`, `branches`, `contents`).
 - Cuts must be expressed in C++ syntax: `true`/`false`, `&&`, `||`. If the user supplies Python-style booleans/logicals (True/False, and/or) rewrite them to C++ or call the project's rewrite utility prior to tool calls.
 - Plotting calls: always supply numeric `xmin` and `xmax`. If a plotting tool complains about missing fields ("Field required"), retry the call adding the missing named arguments before aborting.
+- Use `plot_1d` for all 1D plotting (`hist`, `tree`, `tree_compare`, `hist_compare`, `signal_background`) and `plot_2d` for all 2D plotting (`hist`, `tree`).
 - When plotting MC, pass `weight_branch` (e.g. `weight`) to all MC histograms; data overlays must use unit weight (do not apply MC weights to data).
 - For cutflow: call `generate_cutflow(file_path=..., file_paths=[...], tree_name=..., cuts=[...], weight=...)` once over all MC files (signal + backgrounds). Do NOT include `data.root` when computing the weighted MC cutflow. If a data-only cutflow is desired, call `generate_cutflow` separately for data with no weight.
 - For counting events passing a single cut: call `apply_cut_and_count(file_path=..., tree_name=..., cut=...)`.
@@ -28,9 +29,12 @@ Hard rules (follow exactly):
   - Use `compute_significance` when inputs are **TTrees** (event-level ROOT files with a tree name and a selection cut). This computes S/sqrt(S+B) from RDataFrame yields. Always call it once with ALL background files together via `background_files=[...]`.
   - Use `histogram_significance_and_limits` when inputs are **pre-built TH1 histograms** already stored in ROOT files. This uses ROOT RooStats (NumberCountingUtils + AsymptoticCalculator + HypoTestInverter) and additionally returns CLs upper limits and expected bands. Data histogram is optional — if omitted, N=S+B is assumed (expected sensitivity only).
   - Do NOT call both tools for the same analysis. Do NOT call `compute_significance` when you have histograms, and do NOT call `histogram_significance_and_limits` when you only have trees.
+    - When using `histogram_significance_and_limits`: first call `inspect_root_data(mode='contents', file_path=...)` to discover available histogram names in the file. Then call `histogram_significance_and_limits` with `file_path` and explicit histogram names (`bkg_name` and `sig_name`). If a data histogram is present and requested, pass `data_name`; otherwise pass an empty string to compute expected sensitivity (assume N=S+B).
+    - Always provide numeric `center` and `window` values specifying the counting window (same units as the histogram x-axis). Optionally provide `rebin` (>1) to reduce bin-by-bin fluctuations before integration.
+    - The tool returns a single-line summary. When RooStats is available the string contains `NullPValue`, `Significance`, `CLs`, etc.; otherwise it returns `p_b`, `p_sb` and an `approx_significance` fallback. After calling the tool, return the tool output and a one-line human-friendly summary (e.g. "Significance Z=...; see tool output").
 - For optimal cut scanning: call `find_optimal_cut(signal_file=..., background_files=[...], tree_name=..., variable=..., min_cut=..., max_cut=..., step=...)`.
 - For `histogram_integral`: always supply `x_low` and `x_high`. Do not call it without those numeric bounds.
-- Always provide explicit `background_labels` in `plot_signal_vs_backgrounds` to avoid generic labels like "Background 1".
+- For `plot_1d(mode='signal_background')`, provide explicit `background_labels` whenever possible to avoid generic labels.
 - Return concise, factual outputs: a short cutflow summary (one line per cut), the saved PDF path, and the computed significance Z.
 Always save plots to the requested path and return a final brief summary line: saved PDF path and significance Z.
 """
@@ -62,9 +66,7 @@ tools = [
     define_variable,
     define_variable_and_plot,
     plot_1d,
-    plot_signal_vs_backgrounds,
-    draw_2d_histogram,
-    draw_2d_histogram_from_tree,
+    plot_2d,
     fit_distribution,
 ]
 

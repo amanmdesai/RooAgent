@@ -30,3 +30,6 @@ Homepage = "https://github.com/amanmdesai/RooAgent"
 
 [tool.setuptools.packages.find]
 exclude = ["tests", "test*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

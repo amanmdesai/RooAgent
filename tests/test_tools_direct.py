@@ -15,24 +15,16 @@ from rooagent.tools.rdataframe_tools import (  # noqa: E402
 )
 from rooagent.tools.plot_tools import (  # noqa: E402
     _build_signal_background_ratio,
-    compare_tree_variables,
-    draw_1d_histogram,
-    draw_2d_histogram,
-    draw_2d_histogram_from_tree,
-    draw_histograms_same_canvas,
-    plot_signal_vs_backgrounds,
-    plot_tree_variable,
+    plot_1d,
+    plot_2d,
 )
 from rooagent.tools.histogram_tools import get_histogram_stats  # noqa: E402
 from rooagent.tools.tfile import (  # noqa: E402
-    discover_root_data,
-    list_root_file_contents,
-    list_tree_branches,
-    list_ttrees,
+    inspect_root_data,
 )
-from rooagent.tools.fit_tools import fit_histogram, fit_tree_variable  # noqa: E402
+from rooagent.tools.fit_tools import fit_distribution  # noqa: E402
 from rooagent.tools.converter import root_tree_to_csv  # noqa: E402
-from rooagent.tools.utils import get_vector_branches, rewrite_vector_cut  # noqa: E402
+from rooagent.tools.utils import get_vector_branches, rewrite_vector_cut, _parse_file_inputs  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -275,20 +267,22 @@ def test_tfile_tools_work(sample_context):
     signal = sample_context["signal"]
     tree = sample_context["tree"]
 
-    ttrees_output = list_ttrees.invoke({"file_path": signal})
-    assert "TTrees:" in ttrees_output
+    ttrees_output = inspect_root_data.invoke({"mode": "trees", "file_path": signal})
+    assert tree in ttrees_output
 
-    contents_output = list_root_file_contents.invoke({"file_path": signal})
-    assert "ROOT file contents:" in contents_output
+    contents_output = inspect_root_data.invoke({"mode": "contents", "file_path": signal})
+    assert "Error:" not in contents_output
+    assert len(contents_output.strip()) > 0
 
-    branches_output = list_tree_branches.invoke({"file_path": signal, "tree_name": tree})
-    assert "Branches in tree:" in branches_output
+    branches_output = inspect_root_data.invoke(
+        {"mode": "branches", "file_path": signal, "tree_name": tree}
+    )
+    assert ":" in branches_output
 
 
 def test_discover_root_data_tool(sample_context, monkeypatch):
     monkeypatch.chdir(sample_context["tests_dir"])
-    output = discover_root_data.invoke({})
-    assert "ROOT data discovery:" in output
+    output = inspect_root_data.invoke({"mode": "summary", "directory": "."})
     assert "signal.root" in output
     assert "background.root" in output
 
@@ -315,7 +309,7 @@ def test_missing_weight_falls_back_to_count(sample_context):
             "weight": "__definitely_missing_weight_branch__",
         }
     )
-    assert "Significance=" in output
+    assert "Z=" in output
 
 
 def test_compute_significance_two_backgrounds(sample_context):
@@ -328,8 +322,9 @@ def test_compute_significance_two_backgrounds(sample_context):
             "cut": "1==1",
         }
     )
-    assert "Background files (2):" in output
-    assert "Significance=" in output
+    assert "S=" in output
+    assert "B=" in output
+    assert "Z=" in output
 
 
 def test_compute_significance_with_csv_background_string(sample_context):
@@ -341,8 +336,9 @@ def test_compute_significance_with_csv_background_string(sample_context):
             "cut": "1==1",
         }
     )
-    assert "Background files (2):" in output
-    assert "Significance=" in output
+    assert "S=" in output
+    assert "B=" in output
+    assert "Z=" in output
 
 
 def test_apply_cut_and_count_accepts_file_list(sample_context):
@@ -483,8 +479,9 @@ def test_fit_tools_run(sample_context):
     tree_fit_pdf = _artifact_path("fit_tree.pdf")
     hist_fit_pdf = _artifact_path("fit_hist.pdf")
 
-    tree_output = fit_tree_variable.invoke(
+    tree_output = fit_distribution.invoke(
         {
+            "source": "tree",
             "file_path": sample_context["signal"],
             "tree_name": sample_context["tree"],
             "variable": sample_context["variable"],
@@ -495,18 +492,19 @@ def test_fit_tools_run(sample_context):
             "output_plot": str(tree_fit_pdf),
         }
     )
-    assert "Fit function:" in tree_output
+    assert "chi2/ndf=" in tree_output
     assert tree_fit_pdf.exists()
 
-    hist_output = fit_histogram.invoke(
+    hist_output = fit_distribution.invoke(
         {
+            "source": "hist",
             "file_path": sample_context["signal"],
             "hist_name": sample_context["hist"],
             "fit_function": "pol1",
             "output_plot": str(hist_fit_pdf),
         }
     )
-    assert "Histogram fit completed." in hist_output
+    assert "chi2/ndf=" in hist_output
     assert hist_fit_pdf.exists()
 
 
@@ -516,8 +514,9 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     compare_pdf = _artifact_path("compare_tree_vars_ratio.pdf")
     same_canvas_pdf = _artifact_path("same_canvas_ratio.pdf")
 
-    out1 = draw_1d_histogram.invoke(
+    out1 = plot_1d.invoke(
         {
+            "mode": "hist",
             "file_path": sample_context["signal"],
             "hist_name": sample_context["hist"],
             "output_pdf": str(one_d_pdf),
@@ -527,8 +526,9 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert "Saved 1D histogram" in out1
     assert one_d_pdf.exists()
 
-    out2 = plot_tree_variable.invoke(
+    out2 = plot_1d.invoke(
         {
+            "mode": "tree",
             "file_path": sample_context["signal"],
             "tree_name": sample_context["tree"],
             "variable": sample_context["variable"],
@@ -542,8 +542,9 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert "Saved plot to" in out2
     assert tree_pdf.exists()
 
-    out3 = compare_tree_variables.invoke(
+    out3 = plot_1d.invoke(
         {
+            "mode": "tree_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
             "tree_name": sample_context["tree"],
             "variables": [sample_context["variable"], sample_context["variable"]],
@@ -560,8 +561,9 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert compare_pdf.exists()
     assert compare_pdf.stat().st_size > 0
 
-    out4 = draw_histograms_same_canvas.invoke(
+    out4 = plot_1d.invoke(
         {
+            "mode": "hist_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
             "hist_names": [sample_context["signal_hist"], sample_context["background_hist"]],
             "legends": ["signal", "background"],
@@ -576,8 +578,9 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
 
 
 def test_compare_tree_variables_validation(sample_context):
-    out = compare_tree_variables.invoke(
+    out = plot_1d.invoke(
         {
+            "mode": "tree_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
             "tree_name": sample_context["tree"],
             "variables": [sample_context["variable"]],
@@ -592,8 +595,9 @@ def test_compare_tree_variables_validation(sample_context):
 
 
 def test_draw_histograms_same_canvas_validation(sample_context):
-    out = draw_histograms_same_canvas.invoke(
+    out = plot_1d.invoke(
         {
+            "mode": "hist_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
             "hist_names": [sample_context["signal_hist"]],
             "legends": ["signal", "background"],
@@ -606,8 +610,9 @@ def test_draw_histograms_same_canvas_validation(sample_context):
 def test_plot_tools_2d(sample_context):
     tree_2d_pdf = _artifact_path("tree_2d.pdf")
 
-    out_tree = draw_2d_histogram_from_tree.invoke(
+    out_tree = plot_2d.invoke(
         {
+            "mode": "tree",
             "file_path": sample_context["signal"],
             "tree_name": sample_context["tree"],
             "x_branch": sample_context["x_branch"],
@@ -626,8 +631,9 @@ def test_plot_tools_2d(sample_context):
 
     hist2d_name = _discover_first_hist2d(SIGNAL_FILE)
     hist_2d_pdf = _artifact_path("hist_2d.pdf")
-    out_hist = draw_2d_histogram.invoke(
+    out_hist = plot_2d.invoke(
         {
+            "mode": "hist",
             "file_path": sample_context["signal"],
             "hist_name": hist2d_name,
             "output_pdf": str(hist_2d_pdf),
@@ -641,8 +647,9 @@ def test_plot_tools_2d(sample_context):
 def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
     output_pdf = _artifact_path("signal_vs_backgrounds_ratio.pdf")
 
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "background_files": [sample_context["background"]],
             "tree_name": sample_context["tree"],
@@ -663,8 +670,9 @@ def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
 
 def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
     output_pdf = _artifact_path("signal_vs_two_backgrounds_ratio.pdf")
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "background_files": [sample_context["background"], sample_context["background2"]],
             "background_labels": ["bkg", "bkg2"],
@@ -685,8 +693,9 @@ def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
 
 def test_plot_signal_vs_backgrounds_multiple_signals(sample_context):
     output_pdf = _artifact_path("two_signals_vs_background_ratio.pdf")
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "signal_files": [sample_context["background2"]],
             "signal_labels": ["sig1", "sig2"],
@@ -709,8 +718,9 @@ def test_plot_signal_vs_backgrounds_multiple_signals(sample_context):
 
 def test_plot_signal_vs_backgrounds_with_data_markers(sample_context):
     output_pdf = _artifact_path("signal_background_data_markers.pdf")
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "background_files": [sample_context["background"]],
             "data_file": sample_context["background2"],
@@ -780,8 +790,9 @@ def test_signal_background_ratio_uses_sum_of_backgrounds(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_label_validation(sample_context):
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "background_files": [sample_context["background"], sample_context["background2"]],
             "background_labels": ["only_one"],
@@ -797,8 +808,9 @@ def test_plot_signal_vs_backgrounds_label_validation(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_signal_label_validation(sample_context):
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "signal_files": [sample_context["background2"]],
             "signal_labels": ["only_one"],
@@ -815,8 +827,9 @@ def test_plot_signal_vs_backgrounds_signal_label_validation(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_data_validation(sample_context):
-    output = plot_signal_vs_backgrounds.invoke(
+    output = plot_1d.invoke(
         {
+            "mode": "signal_background",
             "signal_file": sample_context["signal"],
             "background_files": [sample_context["background"]],
             "plot_data": True,
@@ -837,3 +850,8 @@ def test_utils_functions(sample_context):
 
     rewritten = rewrite_vector_cut("x > 1", vectors, mode="any")
     assert isinstance(rewritten, str)
+
+
+def test_plot_file_input_parser_merges_and_deduplicates():
+    parsed = _parse_file_inputs("a.root, b.root", ["b.root", "c.root", ""])
+    assert parsed == ["a.root", "b.root", "c.root"]

@@ -1,46 +1,7 @@
 import array as _arr
 import ROOT
 from langchain_core.tools import tool
-
-
-# ─── Private helpers ──────────────────────────────────────────────────────────
-
-def _load_histogram(file_path: str, hist_name: str):
-    """Open *file_path*, fetch *hist_name*, detach it and close the file.
-    Returns (histogram, error_msg).  On success error_msg is None."""
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
-        return None, f"Error: could not open file {file_path}."
-    h = f.Get(hist_name)
-    if not h:
-        f.Close()
-        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
-    h.SetDirectory(0)
-    ROOT.SetOwnership(h, False)
-    f.Close()
-    return h, None
-
-
-def _maybe_rebin_hist(hist, rebin: int):
-    """Return a rebinned histogram when `rebin` > 1, otherwise return original.
-
-    Uses TH1.Rebin to create a new histogram with grouped bins. If `rebin`
-    is 1 or invalid, the original histogram is returned unchanged.
-    """
-    try:
-        r = int(rebin) if rebin is not None else 1
-    except Exception:
-        r = 1
-    if r <= 1 or hist is None:
-        return hist
-    newname = f"{hist.GetName()}_rebin{r}"
-    try:
-        hreb = hist.Rebin(r, newname)
-        ROOT.SetOwnership(hreb, False)
-        hreb.SetDirectory(0)
-        return hreb
-    except Exception:
-        return hist
+from .utils import _load_histogram, _maybe_rebin_hist
 
 
 # ─── Public tools ─────────────────────────────────────────────────────────────

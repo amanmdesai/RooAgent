@@ -1,41 +1,12 @@
 from typing import List, Dict, Optional
 import ROOT
 from langchain_core.tools import tool
-from .utils import *
-
-
-# Module-level counter ensures unique ROOT canvas names
-_canvas_counter = [0]
-
-
-def _unique_canvas_name(base: str) -> str:
-    _canvas_counter[0] += 1
-    return f"{base}_{_canvas_counter[0]}"
-
-
-def _parse_background_inputs(
-    background_file: Optional[str] = None,
-    background_files: Optional[List[str]] = None
-) -> List[str]:
-    """
-    Normalize background inputs into a clean list of ROOT file paths.
-
-    Supports either:
-    - background_file="bkg.root"
-    - background_files=["bkg1.root", "bkg2.root"]
-    - background_file="bkg1.root, bkg2.root" (comma-separated)
-    """
-    parsed: List[str] = []
-
-    if background_file:
-        parsed.extend([p.strip() for p in background_file.split(",") if p.strip()])
-
-    if background_files:
-        parsed.extend([p.strip() for p in background_files if p and p.strip()])
-
-    # De-duplicate while preserving order.
-    unique = list(dict.fromkeys(parsed))
-    return unique
+from .utils import (
+    _parse_background_inputs,
+    _unique_canvas_name,
+    get_vector_branches,
+    rewrite_vector_cut,
+)
 
 
 def _build_dataframe(tree_name: str, files: List[str]):

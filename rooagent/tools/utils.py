@@ -3,10 +3,153 @@ import ROOT
 import re
 
 
+import os
+from typing import List, Optional
+import ROOT
+import re
+import array as _arr
+import math
+
+
+# Module-level counter for unique canvas names shared across tools
+_canvas_counter = [0]
+
+
+def _unique_canvas_name(base: str) -> str:
+    _canvas_counter[0] += 1
+    return f"{base}_{_canvas_counter[0]}"
+
+
+def _open_root_file(file_path: str):
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        try:
+            if f:
+                f.Close()
+        except Exception:
+            pass
+        return None
+    return f
+
+
+def _get_root_files(directory: str = ".") -> List[str]:
+    try:
+        return [f for f in os.listdir(directory) if f.lower().endswith(".root")]
+    except Exception:
+        return []
+
+
+def _get_trees(root_file: ROOT.TFile) -> List[str]:
+    trees: List[str] = []
+    try:
+        for key in root_file.GetListOfKeys():
+            obj = key.ReadObj()
+            if obj and hasattr(obj, "InheritsFrom") and obj.InheritsFrom("TTree"):
+                trees.append(obj.GetName())
+    except Exception:
+        pass
+    return trees
+
+
+def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
+    entries: List[str] = []
+    try:
+        for key in root_dir.GetListOfKeys():
+            obj = key.ReadObj()
+            if obj is None:
+                continue
+            name = obj.GetName()
+            class_name = obj.ClassName() if hasattr(obj, "ClassName") else type(obj).__name__
+            full = f"{prefix}{name} ({class_name})"
+            entries.append(full)
+
+            if obj.InheritsFrom("TDirectory") if hasattr(obj, "InheritsFrom") else False:
+                try:
+                    entries.extend(_list_objects_recursive(obj, prefix=f"{prefix}{name}/"))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return entries
+
+
+def _get_hist(f, name: str):
+    if not f:
+        return None
+    h = f.Get(name)
+    if not h:
+        return None
+    try:
+        h.SetDirectory(0)
+        ROOT.SetOwnership(h, False)
+    except Exception:
+        pass
+    return h
+
+
+def _load_histogram(file_path: str, hist_name: str):
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return None, f"Error: could not open file {file_path}."
+    h = f.Get(hist_name)
+    if not h:
+        f.Close()
+        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+    f.Close()
+    return h, None
+
+
+def _maybe_rebin_hist(hist, rebin: int):
+    try:
+        r = int(rebin) if rebin is not None else 1
+    except Exception:
+        r = 1
+    if r <= 1 or hist is None:
+        return hist
+    newname = f"{hist.GetName()}_rebin{r}"
+    try:
+        hreb = hist.Rebin(r, newname)
+        ROOT.SetOwnership(hreb, False)
+        hreb.SetDirectory(0)
+        return hreb
+    except Exception:
+        return hist
+
+
+def _parse_background_inputs(
+    background_file: Optional[str] = None,
+    background_files: Optional[List[str]] = None,
+) -> List[str]:
+    parsed: List[str] = []
+
+    if background_file:
+        parsed.extend([p.strip() for p in background_file.split(",") if p.strip()])
+
+    if background_files:
+        parsed.extend([p.strip() for p in background_files if p and p.strip()])
+
+    unique = list(dict.fromkeys(parsed))
+    return unique
+
+
+def _parse_file_inputs(
+    primary_file: Optional[str] = None,
+    additional_files: Optional[List[str]] = None,
+) -> List[str]:
+    parsed: List[str] = []
+
+    if primary_file:
+        parsed.extend([p.strip() for p in primary_file.split(",") if p.strip()])
+
+    if additional_files:
+        parsed.extend([p.strip() for p in additional_files if p and p.strip()])
+
+    return list(dict.fromkeys(parsed))
+
+
 def get_vector_branches(file_path: str, tree_name: str) -> List[str]:
-    """
-    Detect vector branches in a TTree.
-    """
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return []
@@ -30,22 +173,9 @@ def get_vector_branches(file_path: str, tree_name: str) -> List[str]:
 
 
 def rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
-    """
-    Rewrite selection cuts so comparisons on vector branches are wrapped
-    with ROOT::VecOps reductions.
-
-    mode:
-        "any" -> ROOT::VecOps::Any()
-        "all" -> ROOT::VecOps::All()
-    
-    The function normalises boolean literals and logical operators to C++ and wraps
-    scalar comparisons on vector branches using the requested reducer.
-    """
-
     if mode not in ["any", "all"]:
         return cut
 
-    # Normalize Python-style literals/operators to C++ for RDataFrame
     cut = re.sub(r"\bTrue\b", "true", cut)
     cut = re.sub(r"\bFalse\b", "false", cut)
     cut = re.sub(r"\band\b", "&&", cut)
