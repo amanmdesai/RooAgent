@@ -8,14 +8,14 @@ from .utils import (
     _unique_canvas_name,
     _maybe_rebin_hist,
     _parse_file_inputs,
-    get_vector_branches,
-    rewrite_vector_cut,
+    _get_vector_branches,
+    _rewrite_vector_cut,
 )
 
 
 def _safe_get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     try:
-        return get_vector_branches(file_path, tree_name)
+        return _get_vector_branches(file_path, tree_name)
     except Exception:
         return []
 
@@ -26,7 +26,7 @@ def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], v
 
     vector_vars = _safe_get_vector_branches(file_path, tree_name)
     for cut in cuts:
-        df = df.Filter(rewrite_vector_cut(cut, vector_vars, vector_mode))
+        df = df.Filter(_rewrite_vector_cut(cut, vector_vars, vector_mode))
     return df
 
 

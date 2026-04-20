@@ -4,8 +4,8 @@ from langchain_core.tools import tool
 from .utils import (
     _parse_background_inputs,
     _unique_canvas_name,
-    get_vector_branches,
-    rewrite_vector_cut,
+    _get_vector_branches,
+    _rewrite_vector_cut,
 )
 
 
@@ -74,8 +74,8 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
     if not paths:
         return "Error: no file(s) provided."
 
-    vector_vars = get_vector_branches(paths[0], tree_name)
-    cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
+    vector_vars = _get_vector_branches(paths[0], tree_name)
+    cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
 
     df = _build_dataframe(tree_name, paths)
 
@@ -122,8 +122,8 @@ def compute_significance(signal_file: str,
         Formatted string containing S, B and the computed Z value or an error.
     """
 
-    vector_vars = get_vector_branches(signal_file, tree_name)
-    cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
+    vector_vars = _get_vector_branches(signal_file, tree_name)
+    cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
 
     bkg_paths = _parse_background_inputs(background_file, background_files)
     if not bkg_paths:
@@ -223,13 +223,13 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     """
 
     df = ROOT.RDataFrame(tree_name, file_path)
-    vector_vars = get_vector_branches(file_path, tree_name)
+    vector_vars = _get_vector_branches(file_path, tree_name)
 
     for name, expr in new_variables.items():
         df = df.Define(name, expr)
 
     for cut in cuts:
-        safe_cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
+        safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
         df = df.Filter(safe_cut)
 
     if weight and _has_column(df, weight):
@@ -300,7 +300,7 @@ def find_optimal_cut(signal_file: str,
     sig_df = ROOT.RDataFrame(tree_name, signal_file)
     bkg_df = _build_dataframe(tree_name, bkg_paths)
 
-    vector_vars = get_vector_branches(signal_file, tree_name)
+    vector_vars = _get_vector_branches(signal_file, tree_name)
 
     best_cut = None
     best_sig = -1
@@ -321,7 +321,7 @@ def find_optimal_cut(signal_file: str,
         else:
             full_cut = scan_cut
 
-        full_cut = rewrite_vector_cut(full_cut, vector_vars, vector_mode)
+        full_cut = _rewrite_vector_cut(full_cut, vector_vars, vector_mode)
 
         S = _filtered_yield(sig_df, full_cut, weight)
         B = _filtered_yield(bkg_df, full_cut, weight)
@@ -383,7 +383,7 @@ def generate_cutflow(
 
     df = _build_dataframe(tree_name, paths)
 
-    vector_vars = get_vector_branches(paths[0], tree_name)
+    vector_vars = _get_vector_branches(paths[0], tree_name)
 
     results = []
 
@@ -396,7 +396,7 @@ def generate_cutflow(
 
     for cut in cuts:
 
-        safe_cut = rewrite_vector_cut(cut, vector_vars, vector_mode)
+        safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
 
         current_df = current_df.Filter(safe_cut)
 

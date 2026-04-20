@@ -26,7 +26,7 @@ from rooagent.tools.tfile_tools import (  # noqa: E402
 )
 from rooagent.tools.fit_tools import fit_distribution  # noqa: E402
 from rooagent.tools.data_format_tools import root_tree_to_csv  # noqa: E402
-from rooagent.tools.utils import get_vector_branches, rewrite_vector_cut, _parse_file_inputs  # noqa: E402
+from rooagent.tools.utils import _get_vector_branches, _rewrite_vector_cut, _parse_file_inputs  # noqa: E402
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -960,10 +960,10 @@ def test_plot_signal_vs_backgrounds_data_validation(sample_context):
 
 
 def test_utils_functions(sample_context):
-    vectors = get_vector_branches(sample_context["signal"], sample_context["tree"])
+    vectors = _get_vector_branches(sample_context["signal"], sample_context["tree"])
     assert isinstance(vectors, list)
 
-    rewritten = rewrite_vector_cut("x > 1", vectors, mode="any")
+    rewritten = _rewrite_vector_cut("x > 1", vectors, mode="any")
     assert isinstance(rewritten, str)
 
 

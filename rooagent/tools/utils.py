@@ -1,23 +1,18 @@
-from typing import List
-import ROOT
-import re
-
-
-import os
 from typing import List, Optional
-import ROOT
+import os
 import re
 import array as _arr
 import math
+import ROOT
 
 
 # Module-level counter for unique canvas names shared across tools
 _canvas_counter = [0]
 
 
-def _unique_canvas_name(base: str) -> str:
-    _canvas_counter[0] += 1
-    return f"{base}_{_canvas_counter[0]}"
+###############################
+# tfile_tools.py helpers
+###############################
 
 
 def _open_root_file(file_path: str):
@@ -73,18 +68,10 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
     return entries
 
 
-def _get_hist(f, name: str):
-    if not f:
-        return None
-    h = f.Get(name)
-    if not h:
-        return None
-    try:
-        h.SetDirectory(0)
-        ROOT.SetOwnership(h, False)
-    except Exception:
-        pass
-    return h
+###############################
+# histogram_tools.py helpers
+# (also used by plot_tools.py)
+###############################
 
 
 def _load_histogram(file_path: str, hist_name: str):
@@ -118,6 +105,12 @@ def _maybe_rebin_hist(hist, rebin: int):
         return hist
 
 
+###############################
+# rdataframe_tools.py helpers
+# (also used by plot_tools.py)
+###############################
+
+
 def _parse_background_inputs(
     background_file: Optional[str] = None,
     background_files: Optional[List[str]] = None,
@@ -149,7 +142,7 @@ def _parse_file_inputs(
     return list(dict.fromkeys(parsed))
 
 
-def get_vector_branches(file_path: str, tree_name: str) -> List[str]:
+def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return []
@@ -172,7 +165,7 @@ def get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     return vector_branches
 
 
-def rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
+def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
     if mode not in ["any", "all"]:
         return cut
 
@@ -192,6 +185,36 @@ def rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> s
             cut = cut.replace(match, wrapped)
 
     return cut
+
+
+###############################
+# plot_tools.py helpers
+# (also used by fit_tools.py and rdataframe_tools.py)
+###############################
+
+
+def _unique_canvas_name(base: str) -> str:
+    _canvas_counter[0] += 1
+    return f"{base}_{_canvas_counter[0]}"
+
+
+###############################
+# stat_tools.py helpers
+###############################
+
+
+def _get_hist(f, name: str):
+    if not f:
+        return None
+    h = f.Get(name)
+    if not h:
+        return None
+    try:
+        h.SetDirectory(0)
+        ROOT.SetOwnership(h, False)
+    except Exception:
+        pass
+    return h
 
 
 def _poisson_tail_ge(n_obs: int, mean: float) -> float:
@@ -261,7 +284,6 @@ def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
 
 
 def _cls_at_mu(n_obs: int, n_bkg: float, n_sig_nominal: float, mu: float) -> float:
-    """Return CLs for signal strength *mu* (signal yield = mu * n_sig_nominal)."""
     expected_sb = n_bkg + mu * n_sig_nominal
     clb = _poisson_tail_le(n_obs, n_bkg)
     clsplusb = _poisson_tail_le(n_obs, expected_sb)
@@ -278,11 +300,6 @@ def _upper_limit_bisect(
     mu_max: float = 20.0,
     n_iter: int = 60,
 ) -> float:
-    """Find mu_UL such that CLs(mu_UL) == 1 - cl via bisection.
-
-    The upper limit is expressed as a multiple of the nominal signal yield,
-    i.e. the excluded signal yield is mu_UL * n_sig_nominal.
-    """
     target = 1.0 - cl  # e.g. 0.05 for 95% CL
 
     # CLs is a decreasing function of mu; ensure bracket exists
