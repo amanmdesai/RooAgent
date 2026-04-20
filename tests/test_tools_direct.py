@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 
 import pytest
 
@@ -19,11 +20,12 @@ from rooagent.tools.plot_tools import (  # noqa: E402
     plot_2d,
 )
 from rooagent.tools.histogram_tools import get_histogram_stats  # noqa: E402
-from rooagent.tools.tfile import (  # noqa: E402
+from rooagent.tools.stat_tools import histogram_significance_and_limits, histogram_upper_limit  # noqa: E402
+from rooagent.tools.tfile_tools import (  # noqa: E402
     inspect_root_data,
 )
 from rooagent.tools.fit_tools import fit_distribution  # noqa: E402
-from rooagent.tools.converter import root_tree_to_csv  # noqa: E402
+from rooagent.tools.data_format_tools import root_tree_to_csv  # noqa: E402
 from rooagent.tools.utils import get_vector_branches, rewrite_vector_cut, _parse_file_inputs  # noqa: E402
 
 
@@ -297,6 +299,119 @@ def test_histogram_stats_tool(sample_context):
     assert "Mean:" in output
     assert "RMS:" in output
     assert "Entries:" in output
+
+
+def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
+    root_file = tmp_path / "cls_input.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    hbkg = ROOT.TH1F("bkg", "bkg", 4, 0.0, 4.0)
+    hsig = ROOT.TH1F("sig", "sig", 4, 0.0, 4.0)
+    hdata = ROOT.TH1F("data", "data", 4, 0.0, 4.0)
+
+    for _ in range(10):
+        hbkg.Fill(1.5)
+    for _ in range(5):
+        hsig.Fill(1.5)
+    for _ in range(3):
+        hdata.Fill(1.5)
+
+    hbkg.Write()
+    hsig.Write()
+    hdata.Write()
+    f.Close()
+
+    output = histogram_significance_and_limits.invoke(
+        {
+            "file_path": str(root_file),
+            "data_name": "data",
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "center": 1.5,
+            "window": 0.5,
+        }
+    )
+
+    assert "DiscoveryPValue:" in output
+    assert "CLs:" in output
+
+    match = re.search(r"CLs:\s*([0-9.eE+-]+)", output)
+    assert match is not None
+    assert float(match.group(1)) < 1.0
+
+
+def test_upper_limit_no_excess_analytic(tmp_path):
+    """With n_obs == round(B) (no excess) the observed and expected limits agree
+    and the excluded yield is positive and finite."""
+    root_file = tmp_path / "ul_input.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    hbkg = ROOT.TH1F("bkg", "bkg", 1, 0.0, 2.0)
+    hsig = ROOT.TH1F("sig", "sig", 1, 0.0, 2.0)
+    hbkg.SetBinContent(1, 10.0)
+    hsig.SetBinContent(1, 5.0)
+    hbkg.Write()
+    hsig.Write()
+    f.Close()
+
+    # No data_name → observed count = round(B) = 10, same as expected
+    output = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "center": 1.0,
+            "window": 1.0,
+        }
+    )
+
+    assert "ObservedUpperLimit_mu:" in output
+    assert "ExpectedUpperLimit_mu:" in output
+
+    mu_obs = float(re.search(r"ObservedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
+    mu_exp = float(re.search(r"ExpectedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
+
+    # Both limits must be finite and positive
+    assert 0.0 < mu_obs < float("inf")
+    assert 0.0 < mu_exp < float("inf")
+    # With no excess observed == expected (same Asimov dataset)
+    assert abs(mu_obs - mu_exp) < 1e-6
+
+
+def test_upper_limit_with_data(tmp_path):
+    """When data shows a deficit the observed limit is tighter than expected."""
+    root_file = tmp_path / "ul_data_input.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    hbkg = ROOT.TH1F("bkg", "bkg", 1, 0.0, 2.0)
+    hsig = ROOT.TH1F("sig", "sig", 1, 0.0, 2.0)
+    hdata = ROOT.TH1F("data", "data", 1, 0.0, 2.0)
+    hbkg.SetBinContent(1, 10.0)
+    hsig.SetBinContent(1, 5.0)
+    hdata.SetBinContent(1, 7.0)  # deficit: 7 < B=10
+    hbkg.Write()
+    hsig.Write()
+    hdata.Write()
+    f.Close()
+
+    output = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "data_name": "data",
+            "center": 1.0,
+            "window": 1.0,
+        }
+    )
+
+    assert "ObservedUpperLimit_mu:" in output
+
+    mu_obs = float(re.search(r"ObservedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
+    mu_exp = float(re.search(r"ExpectedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
+
+    # Deficit → observed limit should be tighter (smaller mu) than expected
+    assert mu_obs < mu_exp
 
 
 def test_missing_weight_falls_back_to_count(sample_context):

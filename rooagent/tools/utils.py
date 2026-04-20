@@ -193,3 +193,114 @@ def rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> s
 
     return cut
 
+
+def _poisson_tail_ge(n_obs: int, mean: float) -> float:
+    n_obs = int(n_obs)
+    mean = max(0.0, float(mean))
+    if n_obs <= 0:
+        return 1.0
+    if mean == 0.0:
+        return 0.0
+    try:
+        return float(ROOT.Math.poisson_cdf_c(n_obs - 1, mean))
+    except Exception:
+        total = 0.0
+        for k in range(0, n_obs):
+            total += math.exp(k * math.log(mean) - math.lgamma(k + 1) - mean)
+        return max(0.0, min(1.0, 1.0 - total))
+
+
+def _poisson_tail_le(n_obs: int, mean: float) -> float:
+    n_obs = int(n_obs)
+    mean = max(0.0, float(mean))
+    if n_obs < 0:
+        return 0.0
+    if mean == 0.0:
+        return 1.0
+    try:
+        return float(ROOT.Math.poisson_cdf(n_obs, mean))
+    except Exception:
+        total = 0.0
+        for k in range(0, n_obs + 1):
+            total += math.exp(k * math.log(mean) - math.lgamma(k + 1) - mean)
+        return max(0.0, min(1.0, total))
+
+
+def _fractional_integral(hist, center: float, window: float) -> float:
+    xlow = center - window
+    xhigh = center + window
+    ax = hist.GetXaxis()
+    nb = hist.GetNbinsX()
+    total = 0.0
+    for ibin in range(1, nb + 1):
+        low = ax.GetBinLowEdge(ibin)
+        high = ax.GetBinUpEdge(ibin)
+        overlap = max(0.0, min(high, xhigh) - max(low, xlow))
+        if overlap <= 0.0:
+            continue
+        width = high - low
+        frac = overlap / width if width > 0.0 else 0.0
+        total += hist.GetBinContent(ibin) * frac
+    return total
+
+
+def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
+    try:
+        if 0.0 < pvalue < 1.0:
+            return float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0))
+    except Exception:
+        pass
+
+    try:
+        if mean > 0.0:
+            return (float(n_obs) - float(mean)) / math.sqrt(float(mean))
+    except Exception:
+        pass
+
+    return float("nan")
+
+
+def _cls_at_mu(n_obs: int, n_bkg: float, n_sig_nominal: float, mu: float) -> float:
+    """Return CLs for signal strength *mu* (signal yield = mu * n_sig_nominal)."""
+    expected_sb = n_bkg + mu * n_sig_nominal
+    clb = _poisson_tail_le(n_obs, n_bkg)
+    clsplusb = _poisson_tail_le(n_obs, expected_sb)
+    if clb <= 0.0:
+        return float("inf")
+    return clsplusb / clb
+
+
+def _upper_limit_bisect(
+    n_obs: int,
+    n_bkg: float,
+    n_sig_nominal: float,
+    cl: float = 0.95,
+    mu_max: float = 20.0,
+    n_iter: int = 60,
+) -> float:
+    """Find mu_UL such that CLs(mu_UL) == 1 - cl via bisection.
+
+    The upper limit is expressed as a multiple of the nominal signal yield,
+    i.e. the excluded signal yield is mu_UL * n_sig_nominal.
+    """
+    target = 1.0 - cl  # e.g. 0.05 for 95% CL
+
+    # CLs is a decreasing function of mu; ensure bracket exists
+    if _cls_at_mu(n_obs, n_bkg, n_sig_nominal, 0.0) <= target:
+        return 0.0  # already excluded at mu=0 (degenerate case)
+
+    # Expand upper bracket if needed
+    while _cls_at_mu(n_obs, n_bkg, n_sig_nominal, mu_max) > target:
+        mu_max *= 2.0
+        if mu_max > 1e6:
+            return float("inf")
+
+    lo, hi = 0.0, mu_max
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        if _cls_at_mu(n_obs, n_bkg, n_sig_nominal, mid) > target:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
