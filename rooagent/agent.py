@@ -66,7 +66,9 @@ tools = [
 
 
 tools_by_name = {tool.name: tool for tool in tools}
-model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
+# Default to sequential tool calls. We'll bind tools per LLM invocation
+# and enable parallel tool calls only when the prompt explicitly requests it.
+model_with_tools = None
 
 # -----------------------------
 # State Definition
@@ -99,9 +101,25 @@ def tool_node(state: MessagesState):
 # LLM Node
 # -----------------------------
 def llm_call(state: MessagesState):
-    response = model_with_tools.invoke(
-        [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    )
+    prompt_messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+
+    # Inspect combined prompt/messages to decide whether to allow parallel tool calls.
+    concat = " ".join(
+        (getattr(m, "content", "") or "") for m in prompt_messages
+    ).lower()
+
+    parallel_requested = False
+    # Accept both explicit flags and natural-language requests.
+    if "parallel_tool_calls" in concat and ("true" in concat or "yes" in concat):
+        parallel_requested = True
+    if "parallel tool" in concat or ("in parallel" in concat and "tool" in concat):
+        parallel_requested = True
+    if "parallelize" in concat or "parallelise" in concat:
+        parallel_requested = True
+
+    model_with_tools = model.bind_tools(tools, parallel_tool_calls=parallel_requested)
+
+    response = model_with_tools.invoke(prompt_messages)
 
     return {
         "messages": [response],
