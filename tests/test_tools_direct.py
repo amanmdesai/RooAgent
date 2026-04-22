@@ -37,6 +37,7 @@ from rooagent.tools.plot_tools import (  # noqa: E402
     _build_signal_background_ratio,
     plot_1d,
     plot_2d,
+    plot_significance_and_cls,
 )
 from rooagent.tools.histogram_tools import get_histogram_stats  # noqa: E402
 from rooagent.tools.stat_tools import histogram_significance_and_limits, histogram_upper_limit  # noqa: E402
@@ -740,6 +741,94 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert "Saved combined histogram plot" in out4
     assert same_canvas_pdf.exists()
     assert same_canvas_pdf.stat().st_size > 0
+
+
+def test_plot_significance_and_cls_creates_png(tmp_path):
+    """Basic: generic y array produces a PNG."""
+    out = tmp_path / "sig_cls.png"
+    masses = [250, 280, 265]
+    significance = [2.43, 2.25, 2.11]
+
+    result = plot_significance_and_cls.invoke(
+        {"masses": masses, "y": significance, "y_label": "Significance (Z)", "output_png": str(out)}
+    )
+    assert "Saved" in result
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_significance_and_cls_convenience_args(tmp_path):
+    """Convenience kwargs significance/cls/upper_limits each produce a file."""
+    masses = [100, 200, 300, 400, 500]
+    vals = [1.0, 2.0, 3.0, 1.5, 0.5]
+
+    for kwarg, suffix in [("significance", "sig"), ("cls", "cls"), ("upper_limits", "ul")]:
+        out = tmp_path / f"{suffix}.png"
+        result = plot_significance_and_cls.invoke(
+            {"masses": masses, kwarg: vals, "output_png": str(out)}
+        )
+        assert "Saved" in result, f"{kwarg}: {result}"
+        assert out.exists()
+
+
+def test_plot_significance_and_cls_png_and_pdf(tmp_path):
+    """Both PNG and PDF are saved when output_pdf is provided."""
+    masses = [100, 200, 300]
+    result = plot_significance_and_cls.invoke(
+        {
+            "masses": masses,
+            "significance": [1.0, 2.0, 3.0],
+            "output_png": str(tmp_path / "out.png"),
+            "output_pdf": str(tmp_path / "out.pdf"),
+        }
+    )
+    assert (tmp_path / "out.png").exists()
+    assert (tmp_path / "out.pdf").exists()
+
+
+def test_plot_significance_and_cls_length_mismatch_truncates(tmp_path):
+    """Mismatched array lengths produce a WARNING but still save the file."""
+    out = tmp_path / "truncated.png"
+    result = plot_significance_and_cls.invoke(
+        {
+            "masses": [100, 200, 300, 400, 500],   # 5 points
+            "significance": [1.0, 2.0, 3.0],       # only 3 — simulates LLM truncation
+            "output_png": str(out),
+        }
+    )
+    assert "Saved" in result
+    assert "WARNING" in result
+    assert out.exists()
+
+
+def test_plot_significance_and_cls_none_values(tmp_path):
+    """None in y-array is converted to NaN gap."""
+    out = tmp_path / "with_none.png"
+    result = plot_significance_and_cls.invoke(
+        {
+            "masses": [100, 200, 300, 400, 500],
+            "significance": [1.0, None, 2.0, None, 3.0],
+            "output_png": str(out),
+        }
+    )
+    assert "Saved" in result
+    assert out.exists()
+
+
+def test_plot_significance_and_cls_no_output_returns_error(tmp_path):
+    """Calling with neither output_png nor output_pdf returns an error string."""
+    result = plot_significance_and_cls.invoke(
+        {"masses": [100, 200], "significance": [1.0, 2.0], "output_png": "", "output_pdf": ""}
+    )
+    assert "Error" in result
+
+
+def test_plot_significance_and_cls_no_y_returns_error(tmp_path):
+    """Calling with no y-data returns an error string."""
+    result = plot_significance_and_cls.invoke(
+        {"masses": [100, 200], "output_png": str(tmp_path / "x.png")}
+    )
+    assert "Error" in result
 
 
 def test_compare_tree_variables_validation(sample_context):

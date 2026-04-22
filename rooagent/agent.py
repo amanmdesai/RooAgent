@@ -54,6 +54,7 @@ tools = [
     plot_1d,
     plot_2d,
     fit_distribution,
+    plot_significance_and_cls,
 ]
 
 

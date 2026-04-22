@@ -2,11 +2,13 @@ from pathlib import Path
 from typing import List, Optional
 
 import ROOT
+import math
 from langchain_core.tools import tool
 
 from .utils import (
     _unique_canvas_name,
     _parse_file_inputs,
+    _to_float_list,
     _load_hist,
     _build_tree_hist,
     _create_plot_pads,
@@ -664,20 +666,12 @@ def plot_1d(
     plot_data: bool = False,
     apply_cuts_before_plot: bool = False,
 ) -> str:
-    """Unified 1D plotting tool.
+    """Unified 1D histogram plotting tool.
 
-    Modes
-    -----
-    - `hist`: draw one TH1 from one file.
-    - `tree`: draw one branch from one tree/file.
-    - `tree_compare`: compare multiple tree variables/files.
-    - `hist_compare`: compare multiple existing TH1 histograms.
-    - `signal_background`: compare signal and background processes.
-
-    Returns
-    -------
-    str
-        Saved PDF path message or a clear error string.
+    mode: "hist" (file_path+hist_name) | "tree" (file_path+tree_name+variable+bins/xmin/xmax) |
+          "tree_compare" (file_paths+variables+legends) |
+          "hist_compare" (file_paths+hist_names+legends) |
+          "signal_background" (signal_file/signal_files + background_files).
     """
     mode_key = (mode or "").strip().lower()
 
@@ -798,17 +792,9 @@ def plot_2d(
     color_palette: int = 55,
     normalize: bool = False,
 ) -> str:
-    """Unified 2D plotting tool.
+    """Unified 2D histogram plotting tool.
 
-    Modes
-    -----
-    - `hist`: draw one TH2 from a ROOT file.
-    - `tree`: build a TH2 from two TTree branches and draw it.
-
-    Returns
-    -------
-    str
-        Saved PDF path message or a clear error string.
+    mode: "hist" (file_path+hist_name) | "tree" (file_path+tree_name+x_branch+y_branch).
     """
     mode_key = (mode or "").strip().lower()
 
@@ -846,3 +832,149 @@ def plot_2d(
         )
 
     return "Error: unsupported mode. Use one of: hist, tree."
+
+
+@tool
+def plot_significance_and_cls(
+    masses: list,
+    y: list = None,
+    y_label: str = "y",
+    output_png: str = "plot.png",
+    output_pdf: str = "",
+    title: str = "",
+    xlabel: str = "Mass (GeV)",
+    fmt: str = "o-",
+    significance: list = None,
+    pvalue: list = None,
+    cls: list = None,
+    upper_limits: list = None,
+    dpi: int = 150,
+    show: bool = False,
+) -> str:
+    """Publication-quality x/y plot for scan results (significance, CLs, upper limits, or any array).
+
+    Workflow: compute arrays (e.g. via histogram_significance_and_limits), then call this tool once per series.
+    Pass `masses` as x-axis and one of: `y` (generic), `significance`, `cls`, or `upper_limits`.
+    Series-specific adornments are added automatically (3σ/5σ lines, CLs=0.05 line, log-y for limits).
+    Saves PNG (and PDF if output_pdf given). Returns the saved file paths.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib import rcParams
+        from pathlib import Path
+    except Exception as e:
+        return f"Error: matplotlib not available: {e}"
+
+    # Resolve which series to plot
+    name, yv, lab = "y", None, y_label
+    if y is not None:
+        yv = _to_float_list(y)
+    elif significance is not None:
+        name, yv, lab = "significance", _to_float_list(significance), y_label or "Significance (Z)"
+    elif pvalue is not None:
+        name, yv, lab = "pvalue", _to_float_list(pvalue), y_label or "p-value"
+    elif cls is not None:
+        name, yv, lab = "cls", _to_float_list(cls), y_label or "CLs"
+    elif upper_limits is not None:
+        name, yv, lab = "upper_limits", _to_float_list(upper_limits), y_label or "Upper limit"
+    else:
+        return "Error: provide one of y, significance, pvalue, cls, or upper_limits."
+
+    x = _to_float_list(masses)
+    n = min(len(x), len(yv))
+    warning = ""
+    if len(x) != len(yv):
+        warning = f" [WARNING: masses had {len(x)} points, y had {len(yv)}; truncated to {n}]"
+        x, yv = x[:n], yv[:n]
+
+    # Publication-quality defaults
+    rcParams.update({
+        "font.family": "serif", "font.size": 10,
+        "axes.titlesize": 11, "axes.labelsize": 10,
+        "xtick.labelsize": 9, "ytick.labelsize": 9,
+        "legend.fontsize": 9, "lines.linewidth": 1.25,
+        "lines.markersize": 6, "axes.linewidth": 0.8,
+        "xtick.direction": "in", "ytick.direction": "in",
+        "pdf.fonttype": 42, "ps.fonttype": 42,
+    })
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    # Prepare plotting y-values. For p-values, replace non-positive entries
+    # with a tiny positive number so log-scale plotting works.
+    yv_plot = list(yv)
+    if name == "pvalue":
+        vals = [v for v in yv_plot if v is not None]
+        pos_vals = [v for v in vals if v is not None and v > 0]
+        min_pos = min(pos_vals) if pos_vals else None
+        safe_small = (min_pos / 10.0) if min_pos else 1e-300
+        yv_plot = [(v if (v is not None and v > 0) else safe_small) for v in yv_plot]
+
+    ax.plot(x, yv_plot, fmt, color="C0", markeredgewidth=0.8, label=lab)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(lab)
+    if title:
+        ax.set_title(title)
+    ax.tick_params(which="both", top=True, right=True)
+    ax.margins(0.02)
+    ax.grid(False)
+
+    if name == "significance":
+        ax.axhline(3, color="C1", linestyle="--", linewidth=1, label="3σ")
+        ax.axhline(5, color="C2", linestyle="--", linewidth=1, label="5σ")
+    elif name == "pvalue":
+        # Use log scale for p-values and draw horizontal lines at p(Z>=z)
+        try:
+            ax.set_yscale("log")
+        except Exception:
+            pass
+
+        # Determine plotting range from the safe y-values we prepared above.
+        try:
+            y_min = min(v for v in yv_plot if v is not None)
+            y_max = max(v for v in yv_plot if v is not None)
+        except Exception:
+            y_min, y_max = None, None
+
+        sigma_levels = [1, 2, 3, 4, 5]
+        colors = ["C1", "C2", "C3", "C4", "C5"]
+        for i, z in enumerate(sigma_levels):
+            # one-sided p-value for normal: p = 0.5 * erfc(z/sqrt(2))
+            p_thr = 0.5 * math.erfc(z / math.sqrt(2.0))
+            # Only draw the horizontal line if the threshold lies within
+            # the plotted y-range (i.e., it's relevant to the data).
+            if y_min is None or y_max is None:
+                continue
+            if p_thr >= y_min and p_thr <= y_max:
+                ax.axhline(p_thr, color=colors[i % len(colors)], linestyle="--", linewidth=1, label=f"{z}σ ({p_thr:.1e})")
+    elif name == "cls":
+        ax.axhline(0.05, color="C3", linestyle="--", linewidth=1, label="CLs = 0.05")
+    elif name == "upper_limits":
+        try:
+            ax.set_yscale("log")
+        except Exception:
+            pass
+
+    ax.legend()
+
+    saved = []
+    try:
+        if output_png:
+            Path(output_png).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_png, dpi=dpi, bbox_inches="tight", pad_inches=0.02)
+            saved.append(output_png)
+        if output_pdf:
+            Path(output_pdf).parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(output_pdf, bbox_inches="tight", pad_inches=0.02)
+            saved.append(output_pdf)
+        if show:
+            plt.show()
+    except Exception as e:
+        return f"Error saving figure: {e}"
+    finally:
+        plt.close(fig)
+
+    if not saved:
+        return "Error: provide output_png or output_pdf."
+    return "Saved: " + ", ".join(saved) + warning

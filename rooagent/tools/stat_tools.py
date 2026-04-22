@@ -1,4 +1,3 @@
-import ROOT
 from langchain_core.tools import tool
 from .utils import (
     _open_root_file,
@@ -21,27 +20,13 @@ def histogram_significance_and_limits(
     center: float = 50.0,
     window: float = 4.0,
 ) -> str:
-    """Compute counting p-values, a significance, and a CLs summary from TH1 histograms.
+    """Compute exact-Poisson p-values, one-sided Gaussian discovery Z, and CLs from TH1s.
 
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing histograms.
-    data_name : str
-        Name of the data histogram. If empty, expected sensitivity is computed
-        assuming N = S + B.
-    bkg_name, sig_name : str
-        Names of the background and signal histograms in the file.
-    center, window : float
-        Center and half-width (same units as histogram x-axis) of the counting
-        window.
-
-    The histograms are integrated as stored; no rebinning is applied.
-
-    Returns
-    -------
-    str
-        One-line summary with discovery p-values, significance, and CLs.
+    Uses exact Poisson tails — valid for any B including low statistics.
+    DiscoverySignificance is reported with one-sided convention (Z >= 0).
+    Prefer this over compute_significance for observed significance.
+    data_name: data histogram; if empty, expected sensitivity assumed (N=S+B).
+    center, window: counting window [center-window, center+window] in x-axis units.
     """
     if not file_path:
         return "Error: file_path is required."
@@ -103,30 +88,12 @@ def histogram_upper_limit(
     window: float = 4.0,
     cl: float = 0.95,
 ) -> str:
-    """Compute a CLs upper limit on signal strength from TH1 histograms.
+    """Compute a CLs upper limit on signal strength mu from TH1 histograms.
 
-    When no significant excess is observed this tool returns the upper limit
-    on the signal strength parameter mu (observed) and the expected limit
-    assuming the background-only hypothesis (mu_exp).
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the ROOT file containing histograms.
-    bkg_name, sig_name : str
-        Names of the background and signal histograms.
-    data_name : str
-        Name of the data histogram. If empty the observed count is taken as the
-        nearest integer to B (background-only Asimov).
-    center, window : float
-        Center and half-width of the counting window (same units as x-axis).
-    cl : float
-        Confidence level, e.g. 0.95 for 95% CL (default).
-
-    Returns
-    -------
-    str
-        Summary string with observed and expected upper limits.
+    Returns observed and expected (B-only Asimov) upper limits on mu.
+    data_name: if empty, n_obs = round(B) (background-only Asimov).
+    center, window: counting window half-width in x-axis units.
+    cl: confidence level (default 0.95).
     """
     if not file_path:
         return "Error: file_path is required."

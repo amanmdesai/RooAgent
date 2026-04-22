@@ -149,6 +149,21 @@ def _parse_file_inputs(
     return list(dict.fromkeys(parsed))
 
 
+def _to_float_list(v):
+    """Convert string/iterable/number input into a list of floats.
+
+    Accepts a comma-separated string, a list/tuple of numbers/strings, or a
+    single numeric value. Returns an empty list for None.
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [float(s.strip()) for s in v.split(",") if s.strip()]
+    if isinstance(v, (list, tuple)):
+        return [float("nan") if x is None else float(x) for x in v]
+    return [float(v)]
+
+
 # Detect vector-like branches in a TTree by examining branch classnames.
 def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     f = ROOT.TFile.Open(file_path)
@@ -547,20 +562,22 @@ def _fractional_integral(hist, center: float, window: float) -> float:
     return total
 
 
-# Convert a p-value to Gaussian Z or fallback to (n_obs-mean)/sqrt(mean) when needed.
+# Convert an upper-tail p-value to a one-sided discovery Z (Z >= 0).
 def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
     try:
-        if 0.0 < pvalue < 1.0:
-            # ROOT::Math::normal_quantile_c(double x, double sigma) returns the
-            # quantile z such that P(Z >= z) = x for a Normal(0, sigma).
-            # Signature takes exactly 2 arguments: probability and sigma.
-            return float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0))
+        if 0.0 <= pvalue <= 1.0:
+            # ROOT::Math::normal_quantile_c(p, sigma) returns z such that
+            # P(Z >= z) = p for a Normal(0, sigma). For discovery reporting,
+            # deficits are clipped to 0 (one-sided convention).
+            z = float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0))
+            return max(0.0, z)
     except Exception:
         pass
 
     try:
         if mean > 0.0:
-            return (float(n_obs) - float(mean)) / math.sqrt(float(mean))
+            z = (float(n_obs) - float(mean)) / math.sqrt(float(mean))
+            return max(0.0, z)
     except Exception:
         pass
 
@@ -608,19 +625,33 @@ def _upper_limit_bisect(
     return 0.5 * (lo + hi)
 
 
-# Asymptotic (Cowan) significance for S+B vs B; useful when working with
-# fractional expected signal/background yields. This gives a non-negative
-# approximate Z value for excesses and is robust for ranking hypotheses.
+# Asymptotic (Cowan) significance for expected S+B vs B yields.
+# Valid when B >> ~10 and no background uncertainty is modelled.
+# Use for expected sensitivity estimates and discovery reach projections.
 def _asymptotic_significance(n_sig: float, n_bkg: float) -> float:
     try:
         s = float(n_sig)
         b = float(n_bkg)
         if b <= 0.0:
             return float("nan")
-        # Formula from Cowan et al., asymptotic discovery significance:
-        # Z = sqrt(2*((s+b)*log(1+s/b) - s))
+        # Cowan et al. 2010, Eur.Phys.J. C71 (2011) 1554, eq. 17
+        # Z = sqrt(2 * [(s+b) * ln(1 + s/b) - s])
+        # Assumes Asimov dataset (n_obs = s+b); valid when B >> ~10.
         val = 2.0 * ((s + b) * math.log(1.0 + (s / b)) - s)
         return math.sqrt(val) if val > 0.0 else 0.0
     except Exception:
         return float("nan")
+
+
+#Compute discovery significance from expected signal S and background B yields.
+def _compute_significance_from_yields(S: float, B: float, method: str = "simple") -> float:
+
+    s = float(S)
+    b = float(B)
+    if method == "asymptotic":
+        return _asymptotic_significance(s, b)
+    # default: "simple"  — S / sqrt(B)
+    if b <= 0.0:
+        return float("nan")
+    return s / math.sqrt(b)
 

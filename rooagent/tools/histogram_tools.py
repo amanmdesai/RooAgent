@@ -8,13 +8,9 @@ from .utils import _load_histogram, _rebin_hist
 
 @tool
 def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
-    """Return quick statistics for a TH1 histogram: mean, RMS, and entries.
+    """Return mean, RMS, and entries for a TH1 histogram.
 
-    Parameters
-    ----------
-    rebin : int
-        Optional rebin factor (default 1 = no rebin). When >1 the histogram
-        is rebinned before computing the stats.
+    rebin: optional rebin factor applied before computing stats.
     """
     h, err = _load_histogram(file_path, hist_name)
     if err:

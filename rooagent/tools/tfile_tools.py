@@ -14,30 +14,13 @@ def inspect_root_data(
     file_path: str = "",
     tree_name: str = "",
 ) -> str:
-    """Unified ROOT discovery and inspection tool.
+    """Inspect ROOT files, TTrees, and branches.
 
-    Use this single tool instead of multiple file/tree helpers.
-
-    Parameters
-    ----------
-    mode : str
-        Inspection mode. Supported values:
-        - "files": list `.root` files in `directory`
-        - "summary": per-file TTree summary in `directory`
-        - "contents": recursive object listing for `file_path`
-        - "trees": TTree names for `file_path`
-        - "branches": branch list for `file_path` and `tree_name`
-    directory : str
-        Directory for "files" and "summary" modes.
-    file_path : str
-        ROOT file path for "contents", "trees", and "branches" modes.
-    tree_name : str
-        Required only for "branches" mode.
-
-    Returns
-    -------
-    str
-        Human-readable inspection output or a clear error message.
+    mode: "files" (list .root files) | "summary" (trees per file) |
+          "contents" (all objects) | "trees" (TTree names) | "branches" (branch list).
+    directory: used by modes "files" and "summary".
+    file_path: used by modes "contents", "trees", "branches".
+    tree_name: required for mode "branches".
     """
     mode_key = (mode or "summary").strip().lower()
 

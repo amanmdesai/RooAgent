@@ -16,27 +16,13 @@ def fit_distribution(
     xmax: float = 1.0,
     hist_name: str = "",
 ) -> str:
-    """Fit a distribution from a TTree or TH1 and save an annotated plot.
+    """Fit a ROOT function to a TH1 or TTree branch and save an annotated plot.
 
-    Parameters
-    ----------
-    source : str
-        Input mode: "tree" or "hist".
-    fit_function : str
-        ROOT-compatible fit function name (e.g. "gaus", "pol1").
-    output_plot : str
-        Output image/PDF path.
-    file_path : str
-        ROOT file path.
-    tree_name, variable, bins, xmin, xmax :
-        Required for `source="tree"`.
-    hist_name : str
-        Required for `source="hist"`.
-
-    Returns
-    -------
-    str
-        Fit parameter summary with chi2/ndf or an error message.
+    source: "tree" or "hist".
+    fit_function: ROOT function name, e.g. "gaus", "pol1", "expo".
+    tree_name/variable/bins/xmin/xmax: required when source="tree".
+    hist_name: required when source="hist".
+    Returns fit parameters and chi2/ndf.
     """
     source_key = (source or "").strip().lower()
 
