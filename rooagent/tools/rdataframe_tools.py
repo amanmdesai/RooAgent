@@ -1,6 +1,7 @@
 from typing import List, Dict, Optional
 import ROOT
 import os
+import math
 from langchain_core.tools import tool
 from .utils import (
     _parse_background_inputs,
@@ -11,6 +12,7 @@ from .utils import (
     _has_column,
     _filtered_yield,
     _total_yield,
+    _asymptotic_significance,
 )
 
 
@@ -66,7 +68,11 @@ def compute_significance(signal_file: str,
                          vector_mode: str = "all",
                          weight: Optional[str] = None,
                          background_files: Optional[List[str]] = None) -> str:
-    """Compute the S/sqrt(S+B) discovery significance for a selection cut.
+    """Compute the Poisson discovery significance for a selection cut.
+
+    Uses the asymptotic Cowan formula: Z = sqrt(2*[(S+B)*ln(1+S/B) - S]),
+    which reduces to S/sqrt(B) for S << B. Falls back to S/sqrt(B) when S or B
+    are zero or degenerate.
 
     This tool computes significance once with all backgrounds summed. Always pass
     all background files together via `background_files` so that B is the sum of
@@ -109,10 +115,12 @@ def compute_significance(signal_file: str,
     S = _filtered_yield(sig_df, cut, weight)
     B = _filtered_yield(bkg_df, cut, weight)
 
-    if (S + B) <= 0:
+    if B <= 0 and S <= 0:
         return "No events after cuts; significance undefined."
+    if B <= 0:
+        return f"S={S} B={B} Z=inf (no background)"
 
-    significance = S / ((S + B) ** 0.5)
+    significance = _asymptotic_significance(S, B)
     return f"S={S} B={B} Z={significance:.3f}"
 
 @tool
@@ -281,7 +289,6 @@ def find_optimal_cut(signal_file: str,
     best_S = 0
     best_B = 0
 
-    import math
     n_steps = int(round((max_cut - min_cut) / step)) + 1
     for i in range(n_steps):
         cut_val = round(min_cut + i * step, 10)
@@ -300,7 +307,7 @@ def find_optimal_cut(signal_file: str,
         S = _filtered_yield(sig_df, full_cut, weight)
         B = _filtered_yield(bkg_df, full_cut, weight)
 
-        significance = S / ((S + B) ** 0.5) if (S + B) > 0 else 0
+        significance = _asymptotic_significance(S, B) if B > 0 else (S / math.sqrt(S) if S > 0 else 0.0)
 
         if significance > best_sig:
             best_sig = significance

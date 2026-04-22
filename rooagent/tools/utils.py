@@ -551,6 +551,9 @@ def _fractional_integral(hist, center: float, window: float) -> float:
 def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
     try:
         if 0.0 < pvalue < 1.0:
+            # ROOT::Math::normal_quantile_c(double x, double sigma) returns the
+            # quantile z such that P(Z >= z) = x for a Normal(0, sigma).
+            # Signature takes exactly 2 arguments: probability and sigma.
             return float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0))
     except Exception:
         pass
@@ -603,4 +606,21 @@ def _upper_limit_bisect(
         else:
             hi = mid
     return 0.5 * (lo + hi)
+
+
+# Asymptotic (Cowan) significance for S+B vs B; useful when working with
+# fractional expected signal/background yields. This gives a non-negative
+# approximate Z value for excesses and is robust for ranking hypotheses.
+def _asymptotic_significance(n_sig: float, n_bkg: float) -> float:
+    try:
+        s = float(n_sig)
+        b = float(n_bkg)
+        if b <= 0.0:
+            return float("nan")
+        # Formula from Cowan et al., asymptotic discovery significance:
+        # Z = sqrt(2*((s+b)*log(1+s/b) - s))
+        val = 2.0 * ((s + b) * math.log(1.0 + (s / b)) - s)
+        return math.sqrt(val) if val > 0.0 else 0.0
+    except Exception:
+        return float("nan")
 

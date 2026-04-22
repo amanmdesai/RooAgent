@@ -70,8 +70,11 @@ def histogram_integral(
     bin_lo = ax.FindBin(x_low)
     bin_hi = ax.FindBin(x_high)
 
-    # If x_high falls exactly on a lower bin edge, exclude that extra bin
-    if ax.GetBinLowEdge(bin_hi) == x_high and bin_hi > 1:
+    # If x_high falls exactly on a bin's lower edge, exclude that bin so the
+    # integral is half-open [x_low, x_high).  Use a relative-epsilon comparison
+    # to handle floating-point imprecision in user-supplied limits.
+    _eps = 1e-9 * (axis_hi - axis_lo)
+    if abs(ax.GetBinLowEdge(bin_hi) - x_high) < _eps and bin_hi > 1:
         bin_hi -= 1
 
     lo_clamp = 0 if include_overflow else 1

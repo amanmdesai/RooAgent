@@ -17,12 +17,14 @@ jobs:
         uses: conda-incubator/setup-miniconda@v2
         with:
           auto-update-conda: true
-          python-version: 3.10
+          python-version: 3.9
 
-      - name: Create conda env and install dependencies
+      - name: Create conda env and install dependencies (use mamba)
         shell: bash -l {0}
         run: |
-          conda create -n rooenv -y -c conda-forge python=3.10 root numpy pandas pip
+          source $(conda info --base)/etc/profile.d/conda.sh
+          conda install -n base -c conda-forge mamba -y
+          mamba create -n rooenv -y -c conda-forge python=3.9 root numpy pandas pip
           source $(conda info --base)/etc/profile.d/conda.sh
           conda activate rooenv
           pip install --upgrade pip
