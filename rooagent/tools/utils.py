@@ -1,7 +1,6 @@
 from typing import List, Optional
 import os
 import re
-import array as _arr
 import math
 import ROOT
 
@@ -15,6 +14,7 @@ _canvas_counter = [0]
 ###############################
 
 
+# Open a ROOT TFile and return it, or None if the file cannot be opened.
 def _open_root_file(file_path: str):
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -27,6 +27,7 @@ def _open_root_file(file_path: str):
     return f
 
 
+# Return a list of .root filenames in `directory` (non-recursive).
 def _get_root_files(directory: str = ".") -> List[str]:
     try:
         return [f for f in os.listdir(directory) if f.lower().endswith(".root")]
@@ -34,6 +35,7 @@ def _get_root_files(directory: str = ".") -> List[str]:
         return []
 
 
+# Extract TTree names from an opened ROOT file object.
 def _get_trees(root_file: ROOT.TFile) -> List[str]:
     trees: List[str] = []
     try:
@@ -46,6 +48,7 @@ def _get_trees(root_file: ROOT.TFile) -> List[str]:
     return trees
 
 
+# Recursively list objects in a ROOT directory, returning "name (Class)" strings.
 def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
     entries: List[str] = []
     try:
@@ -74,6 +77,7 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
 ###############################
 
 
+# Load a TH1 by name from a ROOT file; detach it and return (hist, None) or (None, err).
 def _load_histogram(file_path: str, hist_name: str):
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -88,7 +92,8 @@ def _load_histogram(file_path: str, hist_name: str):
     return h, None
 
 
-def _maybe_rebin_hist(hist, rebin: int):
+def _rebin_hist(hist, rebin: int):
+    # Rebin a histogram by integer factor `rebin`, returning the rebinned object.
     try:
         r = int(rebin) if rebin is not None else 1
     except Exception:
@@ -111,6 +116,7 @@ def _maybe_rebin_hist(hist, rebin: int):
 ###############################
 
 
+# Parse single or multiple background file inputs into a unique ordered list.
 def _parse_background_inputs(
     background_file: Optional[str] = None,
     background_files: Optional[List[str]] = None,
@@ -127,6 +133,7 @@ def _parse_background_inputs(
     return unique
 
 
+# Parse primary and additional file inputs into a deduplicated ordered list.
 def _parse_file_inputs(
     primary_file: Optional[str] = None,
     additional_files: Optional[List[str]] = None,
@@ -142,6 +149,7 @@ def _parse_file_inputs(
     return list(dict.fromkeys(parsed))
 
 
+# Detect vector-like branches in a TTree by examining branch classnames.
 def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
@@ -165,6 +173,7 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     return vector_branches
 
 
+# Rewrite python-like logicals and vector comparisons to RDataFrame/VecOps form.
 def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
     if mode not in ["any", "all"]:
         return cut
@@ -188,14 +197,281 @@ def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> 
 
 
 ###############################
+# Additional rdataframe_helpers moved from rdataframe_tools.py
+###############################
+
+
+# Build an RDataFrame from one or more input ROOT files.
+def _build_dataframe(tree_name: str, files: List[str]):
+    if len(files) == 1:
+        return ROOT.RDataFrame(tree_name, files[0])
+    return ROOT.RDataFrame(tree_name, files)
+
+
+# Return True if the RDataFrame contains a column with the given name.
+def _has_column(df, column_name: str) -> bool:
+    if not column_name:
+        return False
+
+    cols = [str(c) for c in df.GetColumnNames()]
+    return column_name in cols
+
+
+# Return the weighted sum or count after applying `cut` to an RDataFrame.
+def _filtered_yield(df, cut: str, weight: Optional[str] = None):
+    filtered = df.Filter(cut)
+    if weight and _has_column(filtered, weight):
+        return filtered.Sum(weight).GetValue()
+    return filtered.Count().GetValue()
+
+
+# Return total yield from an RDataFrame, using `weight` if present.
+def _total_yield(df, weight: Optional[str] = None):
+    if weight and _has_column(df, weight):
+        return df.Sum(weight).GetValue()
+    return df.Count().GetValue()
+
+
+###############################
 # plot_tools.py helpers
 # (also used by fit_tools.py and rdataframe_tools.py)
 ###############################
 
 
+# Produce a short unique canvas name using an internal counter.
 def _unique_canvas_name(base: str) -> str:
     _canvas_counter[0] += 1
     return f"{base}_{_canvas_counter[0]}"
+
+
+# Apply a list of cuts to an RDataFrame, rewriting vector comparisons safely.
+def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], vector_mode: str):
+    if not cuts:
+        return df
+
+    try:
+        vector_vars = _get_vector_branches(file_path, tree_name)
+    except Exception:
+        vector_vars = []
+
+    for cut in cuts:
+        df = df.Filter(_rewrite_vector_cut(cut, vector_vars, vector_mode))
+    return df
+
+
+# Return the weight branch name if it exists in the dataframe, else empty string.
+def _resolve_weight_branch(df, weight_branch: str) -> str:
+    if not weight_branch:
+        return ""
+
+    columns = [str(c) for c in df.GetColumnNames()]
+    return weight_branch if weight_branch in columns else ""
+
+
+# Load a TH1 and optionally rebin it; returns (hist, None) or (None, error_message).
+def _load_hist(file_path: str, hist_name: str, rebin: int):
+    h, err = _load_histogram(file_path, hist_name)
+    if err:
+        return None, err
+
+    h = _rebin_hist(h, rebin)
+    return h, None
+
+
+# Build a TH1 from a TTree using RDataFrame, applying optional cuts and weights.
+def _build_tree_hist(
+    file_path: str,
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    hist_name: str,
+    weight_branch: str = "",
+    cuts: Optional[List[str]] = None,
+    vector_mode: str = "all",
+    rebin: int = 1,
+):
+    df = ROOT.RDataFrame(tree_name, file_path)
+    df = _apply_cuts(df, file_path, tree_name, cuts, vector_mode)
+
+    resolved_weight = _resolve_weight_branch(df, weight_branch)
+    if resolved_weight:
+        wname = resolved_weight
+    else:
+        wname = "__rooagent_unit_weight"
+        df = df.Define(wname, "1.0")
+
+    hist_ptr = df.Histo1D((hist_name, variable, bins, xmin, xmax), variable, wname)
+    h = hist_ptr.GetValue()
+    ROOT.SetOwnership(h, False)
+    h.SetDirectory(0)
+    h = _rebin_hist(h, rebin)
+    return h
+
+
+# Create a canvas and optional upper/lower pads for plotting ratio panels.
+def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
+    canvas = ROOT.TCanvas(canvas_name, canvas_title, 900, 800 if show_ratio else 700)
+    if not show_ratio:
+        return canvas, None, None
+
+    upper_pad = ROOT.TPad(f"{canvas_name}_upper", "", 0.0, 0.30, 1.0, 1.0)
+    lower_pad = ROOT.TPad(f"{canvas_name}_lower", "", 0.0, 0.00, 1.0, 0.30)
+
+    upper_pad.SetBottomMargin(0.02)
+    lower_pad.SetTopMargin(0.04)
+    lower_pad.SetBottomMargin(0.32)
+    lower_pad.SetGridy(True)
+
+    upper_pad.Draw()
+    lower_pad.Draw()
+    return canvas, upper_pad, lower_pad
+
+
+# Apply styling to a ratio histogram for clear axis sizing and limits.
+def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
+    ratio_hist.SetTitle("")
+    ratio_hist.GetXaxis().SetTitle(x_title)
+    ratio_hist.GetYaxis().SetTitle(y_title)
+    ratio_hist.GetYaxis().SetNdivisions(505)
+    ratio_hist.GetXaxis().SetTitleSize(0.12)
+    ratio_hist.GetYaxis().SetTitleSize(0.10)
+    ratio_hist.GetXaxis().SetLabelSize(0.10)
+    ratio_hist.GetYaxis().SetLabelSize(0.08)
+    ratio_hist.GetYaxis().SetTitleOffset(0.45)
+    ratio_hist.GetXaxis().SetTitleOffset(1.05)
+    ratio_hist.SetMinimum(0.0)
+    ratio_hist.SetMaximum(2.0)
+
+
+# Build ratio histograms of each histogram relative to the first one.
+def _build_reference_ratio_hists(hist_list: List):
+    if len(hist_list) < 2:
+        return []
+
+    reference = hist_list[0]
+    ratio_hists = []
+    for i, hist in enumerate(hist_list[1:], start=1):
+        ratio = hist.Clone(f"{hist.GetName()}_ratio_{i}")
+        ratio.SetDirectory(0)
+        ROOT.SetOwnership(ratio, False)
+        ratio.Divide(reference)
+        ratio_hists.append(ratio)
+
+    return ratio_hists
+
+
+# Build a signal / summed-background ratio histogram from signal and backgrounds.
+def _build_signal_background_ratio(signal_hist, background_hists: List):
+    if signal_hist is None or not background_hists:
+        return None
+
+    summed_background = background_hists[0].Clone(f"{signal_hist.GetName()}_bkg_sum")
+    summed_background.SetDirectory(0)
+    ROOT.SetOwnership(summed_background, False)
+
+    for hist in background_hists[1:]:
+        summed_background.Add(hist)
+
+    ratio = signal_hist.Clone(f"{signal_hist.GetName()}_over_bkg_ratio")
+    ratio.SetDirectory(0)
+    ROOT.SetOwnership(ratio, False)
+    ratio.Divide(summed_background)
+    return ratio
+
+
+# Draw the lower ratio panel using reference ratio histograms.
+def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
+    if lower_pad is None:
+        return
+
+    ratio_hists = _build_reference_ratio_hists(hist_list)
+    if not ratio_hists:
+        return
+
+    lower_pad.cd()
+
+    for i, ratio in enumerate(ratio_hists):
+        _style_ratio_hist(ratio, x_title)
+        ratio.Draw("HIST" if i == 0 else "HIST SAME")
+
+    x_axis = ratio_hists[0].GetXaxis()
+    unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+    ROOT.SetOwnership(unity, False)
+    unity.SetLineStyle(2)
+    unity.SetLineColor(ROOT.kGray + 2)
+    unity.Draw()
+
+
+# Draw multiple histograms on a canvas with legend and optional ratio panel.
+def _draw_overlay_plot(
+    hist_list: List,
+    legend,
+    output_pdf: str,
+    x_title: str,
+    y_title: str,
+    canvas_name: str,
+    canvas_title: str,
+    show_ratio: bool = False,
+    logy: bool = False,
+    draw_options: Optional[List[str]] = None,
+):
+    if not hist_list:
+        return "No histograms created."
+
+    canvas, upper_pad, lower_pad = _create_plot_pads(
+        _unique_canvas_name(canvas_name), canvas_title, show_ratio
+    )
+    draw_pad = upper_pad if upper_pad else canvas
+    draw_pad.cd()
+
+    if logy:
+        draw_pad.SetLogy(True)
+
+    max_val = max(h.GetMaximum() for h in hist_list)
+    prepared_draws = []
+    for i, hist in enumerate(hist_list):
+        hist.SetMaximum(max_val * (15.0 if logy else 1.35))
+        hist.GetXaxis().SetTitle(x_title)
+        hist.GetYaxis().SetTitle(y_title)
+        if show_ratio:
+            hist.GetXaxis().SetLabelSize(0)
+            hist.GetXaxis().SetTitleSize(0)
+            hist.GetYaxis().SetTitleSize(0.055)
+            hist.GetYaxis().SetLabelSize(0.045)
+
+        if draw_options and i < len(draw_options):
+            draw_option = draw_options[i]
+        else:
+            draw_option = "HIST" if i == 0 else "HIST SAME"
+        prepared_draws.append((hist, draw_option))
+
+    non_overlay_draws = []
+    marker_overlay_draws = []
+    for hist, draw_option in prepared_draws:
+        opt = draw_option.upper()
+        is_marker_overlay = ("HIST" not in opt) and (("E" in opt) or ("P" in opt))
+        if is_marker_overlay:
+            marker_overlay_draws.append((hist, draw_option))
+        else:
+            non_overlay_draws.append((hist, draw_option))
+
+    draw_sequence = non_overlay_draws + marker_overlay_draws
+    for i, (hist, draw_option) in enumerate(draw_sequence):
+        option = draw_option
+        if i > 0 and "SAME" not in option.upper():
+            option = f"{option} SAME"
+        hist.Draw(option)
+
+    legend.SetFillStyle(0)
+    legend.Draw()
+
+    _draw_ratio_panel(hist_list, lower_pad, x_title)
+
+    canvas.Update()
+    canvas.SaveAs(output_pdf)
+    return output_pdf
 
 
 ###############################
@@ -203,6 +479,7 @@ def _unique_canvas_name(base: str) -> str:
 ###############################
 
 
+# Safely retrieve a histogram from an open ROOT file and detach it from the file.
 def _get_hist(f, name: str):
     if not f:
         return None
@@ -217,6 +494,7 @@ def _get_hist(f, name: str):
     return h
 
 
+# Compute the Poisson tail P(N >= n_obs) using ROOT when available, else fallback numeric.
 def _poisson_tail_ge(n_obs: int, mean: float) -> float:
     n_obs = int(n_obs)
     mean = max(0.0, float(mean))
@@ -233,6 +511,7 @@ def _poisson_tail_ge(n_obs: int, mean: float) -> float:
         return max(0.0, min(1.0, 1.0 - total))
 
 
+# Compute the Poisson tail P(N <= n_obs) using ROOT when available, else fallback numeric.
 def _poisson_tail_le(n_obs: int, mean: float) -> float:
     n_obs = int(n_obs)
     mean = max(0.0, float(mean))
@@ -249,6 +528,7 @@ def _poisson_tail_le(n_obs: int, mean: float) -> float:
         return max(0.0, min(1.0, total))
 
 
+# Compute the fractional integral of `hist` over [center-window, center+window], handling partial bins.
 def _fractional_integral(hist, center: float, window: float) -> float:
     xlow = center - window
     xhigh = center + window
@@ -267,6 +547,7 @@ def _fractional_integral(hist, center: float, window: float) -> float:
     return total
 
 
+# Convert a p-value to Gaussian Z or fallback to (n_obs-mean)/sqrt(mean) when needed.
 def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
     try:
         if 0.0 < pvalue < 1.0:
@@ -283,6 +564,7 @@ def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
     return float("nan")
 
 
+# Compute CLs at signal strength `mu` using Poisson tails (CLs+b / CLb).
 def _cls_at_mu(n_obs: int, n_bkg: float, n_sig_nominal: float, mu: float) -> float:
     expected_sb = n_bkg + mu * n_sig_nominal
     clb = _poisson_tail_le(n_obs, n_bkg)
@@ -292,6 +574,7 @@ def _cls_at_mu(n_obs: int, n_bkg: float, n_sig_nominal: float, mu: float) -> flo
     return clsplusb / clb
 
 
+# Find the CLs upper limit on mu by bisection to the target confidence level.
 def _upper_limit_bisect(
     n_obs: int,
     n_bkg: float,

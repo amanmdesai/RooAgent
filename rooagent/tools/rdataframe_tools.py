@@ -1,43 +1,17 @@
 from typing import List, Dict, Optional
 import ROOT
+import os
 from langchain_core.tools import tool
 from .utils import (
     _parse_background_inputs,
     _unique_canvas_name,
     _get_vector_branches,
     _rewrite_vector_cut,
+    _build_dataframe,
+    _has_column,
+    _filtered_yield,
+    _total_yield,
 )
-
-
-def _build_dataframe(tree_name: str, files: List[str]):
-    """Build an RDataFrame from one or more ROOT files."""
-    if len(files) == 1:
-        return ROOT.RDataFrame(tree_name, files[0])
-    return ROOT.RDataFrame(tree_name, files)
-
-
-def _has_column(df, column_name: str) -> bool:
-    """Return True if the RDataFrame contains a column with the given name."""
-    if not column_name:
-        return False
-
-    cols = [str(c) for c in df.GetColumnNames()]
-    return column_name in cols
-
-
-def _filtered_yield(df, cut: str, weight: Optional[str] = None):
-    """Return weighted or unweighted yield after applying a cut."""
-    filtered = df.Filter(cut)
-    if weight and _has_column(filtered, weight):
-        return filtered.Sum(weight).GetValue()
-    return filtered.Count().GetValue()
-
-
-def _total_yield(df, weight: Optional[str] = None):
-    """Return weighted total yield, or Count if weight is missing."""
-    if weight and _has_column(df, weight):
-        return df.Sum(weight).GetValue()
-    return df.Count().GetValue()
 
 
 @tool
@@ -376,32 +350,47 @@ def generate_cutflow(
     str
         A multi-line cutflow summary showing yields after each cut.
     """
-
     paths = _parse_background_inputs(file_path, file_paths)
     if not paths:
         return "Error: no file(s) provided."
 
-    df = _build_dataframe(tree_name, paths)
+    # Per-file cutflows (helpful to inspect each background individually)
+    per_file_sections = []
+    for p in paths:
+        df_p = ROOT.RDataFrame(tree_name, p)
+        vector_vars_p = _get_vector_branches(p, tree_name)
 
-    vector_vars = _get_vector_branches(paths[0], tree_name)
+        lines = []
+        initial_p = _total_yield(df_p, weight)
+        lines.append(f"Initial events: {initial_p}")
 
-    results = []
+        current_df_p = df_p
+        for cut in cuts:
+            safe_cut_p = _rewrite_vector_cut(cut, vector_vars_p, vector_mode)
+            current_df_p = current_df_p.Filter(safe_cut_p)
+            val_p = _total_yield(current_df_p, weight)
+            lines.append(f"{cut}: {val_p}")
 
-    # initial count
-    initial = _total_yield(df, weight)
+        fname = os.path.basename(p)
+        per_file_sections.append(f"Cutflow for file: {fname} ({p}):\n" + "\n".join(["- " + l for l in lines]))
 
-    results.append(f"Initial events (files={len(paths)}): {initial}")
+    # Combined (merged) cutflow across all provided files
+    df_all = _build_dataframe(tree_name, paths)
+    vector_vars_all = _get_vector_branches(paths[0], tree_name)
 
-    current_df = df
+    combined_lines = []
+    initial_all = _total_yield(df_all, weight)
+    combined_lines.append(f"Initial events (files={len(paths)}): {initial_all}")
 
+    current_df_all = df_all
     for cut in cuts:
+        safe_cut_all = _rewrite_vector_cut(cut, vector_vars_all, vector_mode)
+        current_df_all = current_df_all.Filter(safe_cut_all)
+        val_all = _total_yield(current_df_all, weight)
+        combined_lines.append(f"{cut}: {val_all}")
 
-        safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
+    combined_section = "Combined cutflow (merged):\n" + "\n".join(["- " + l for l in combined_lines])
 
-        current_df = current_df.Filter(safe_cut)
-
-        value = _total_yield(current_df, weight)
-
-        results.append(f"{cut}: {value}")
-
-    return "Cutflow:\n" + "\n".join(results)
+    # Concatenate per-file sections then combined summary
+    output_sections = ["Cutflow (per-file):"] + per_file_sections + ["", combined_section]
+    return "\n\n".join(output_sections)

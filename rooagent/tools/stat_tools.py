@@ -1,4 +1,3 @@
-import math
 import ROOT
 from langchain_core.tools import tool
 from .utils import (
@@ -8,7 +7,6 @@ from .utils import (
     _poisson_tail_le,
     _fractional_integral,
     _significance_from_pvalue,
-    _cls_at_mu,
     _upper_limit_bisect,
 )
 
@@ -93,9 +91,6 @@ def histogram_significance_and_limits(
     f.Close()
     summary = " | ".join(lines)
     return summary
-
-# Helper functions `_cls_at_mu` and `_upper_limit_bisect` have been moved to
-# `rooagent.tools.utils`.
 
 
 @tool

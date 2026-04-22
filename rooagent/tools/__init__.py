@@ -8,26 +8,61 @@ from .tfile_tools import *
 from .utils import *
 
 
-# ================= ROOT BATCH MODE =================
+# ------------------
+# ROOT configuration
+# ------------------
+import ROOT
+
+# Run ROOT in batch mode by default for non-interactive environments
 ROOT.gROOT.SetBatch(True)
 
-# ================= ROOT STYLE =================
-ROOT.gStyle.SetOptStat(0)
+# Use a clean, publication-friendly default style. These settings are
+# chosen to produce white canvases, clear fonts, tick marks on all sides,
+# and a neutral color palette suitable for printed figures.
+g = ROOT.gStyle
+g.SetOptStat(0)       # no stat box by default
+g.SetOptTitle(0)      # disable default histogram title
 
-ROOT.gStyle.SetTitleFont(42, "XYZ")
-ROOT.gStyle.SetLabelFont(42, "XYZ")
+g.SetCanvasColor(ROOT.kWhite)
+g.SetPadColor(ROOT.kWhite)
+g.SetStatColor(ROOT.kWhite)
+g.SetFrameFillColor(ROOT.kWhite)
 
-ROOT.gStyle.SetTitleSize(0.05, "XYZ")
-ROOT.gStyle.SetLabelSize(0.04, "XYZ")
+g.SetTitleFont(42, "XYZ")
+g.SetLabelFont(42, "XYZ")
+g.SetTextFont(42)
+g.SetTitleSize(0.05, "XYZ")
+g.SetLabelSize(0.04, "XYZ")
+g.SetTitleOffset(1.2, "Y")
+g.SetTitleOffset(1.0, "X")
+g.SetNdivisions(510, "X")
 
-ROOT.gStyle.SetPadLeftMargin(0.12)
-ROOT.gStyle.SetPadBottomMargin(0.12)
+g.SetPadLeftMargin(0.12)
+g.SetPadRightMargin(0.04)
+g.SetPadTopMargin(0.06)
+g.SetPadBottomMargin(0.12)
 
-ROOT.gStyle.SetLegendBorderSize(0)
-ROOT.gStyle.SetLegendFillColor(0)
+g.SetLegendBorderSize(0)
+g.SetLegendFillColor(0)
+g.SetLegendFont(42)
+g.SetLegendTextSize(0.035)
 
-ROOT.gStyle.SetFrameLineWidth(2)
-ROOT.gStyle.SetLineWidth(2)
+g.SetFrameLineWidth(1)
+g.SetLineWidth(2)
+g.SetHistLineWidth(2)
+g.SetEndErrorSize(6)
+g.SetErrorX(0.5)
 
-ROOT.gStyle.SetPadGridX(False)
-ROOT.gStyle.SetPadGridY(False)
+# Draw ticks on all sides of the frame
+g.SetPadTickX(1)
+g.SetPadTickY(1)
+
+# Default color palette (numeric value works across ROOT versions)
+try:
+	g.SetPalette(55)
+except Exception:
+	pass
+
+# By default, do not draw grid lines; callers may enable them when needed
+g.SetPadGridX(False)
+g.SetPadGridY(False)

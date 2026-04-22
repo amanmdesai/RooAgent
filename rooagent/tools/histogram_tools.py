@@ -1,7 +1,7 @@
 import array as _arr
 import ROOT
 from langchain_core.tools import tool
-from .utils import _load_histogram, _maybe_rebin_hist
+from .utils import _load_histogram, _rebin_hist
 
 
 # ─── Public tools ─────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
         return err
 
     # Optionally rebin before computing statistics
-    h = _maybe_rebin_hist(h, rebin)
+    h = _rebin_hist(h, rebin)
 
     mean = h.GetMean()
     rms = h.GetRMS()
@@ -44,7 +44,7 @@ def histogram_integral(
         return err
 
     # Optionally rebin before computing integrals
-    h = _maybe_rebin_hist(h, rebin)
+    h = _rebin_hist(h, rebin)
 
     nb = h.GetNbinsX()
     ax = h.GetXaxis()

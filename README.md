@@ -1,25 +1,30 @@
 # RooAgent
 Agent for ROOT
 
+## Quick start
 
-Download and Install: 
+Clone and install locally:
 
 ```
 git clone https://github.com/amanmdesai/RooAgent.git
 cd RooAgent
+python -m pip install --upgrade pip
 pip install .
 ```
 
-Installation: 
+Or install from PyPI:
 
 ```
 pip install rooagent
 ```
 
-External Dependencies
+## Requirements
 
-Requires a pre-installed version of ROOT that is compatible to work with Python
+- Python >= 3.10
+- CERN ROOT >= 6.34
 
-```
-CERN ROOT: - ROOT >= 6.34 (https://root.cern/)
-```
+## Notes
+
+- External libraries: uproot, pandas, numpy, langchain (specified in pyproject.toml)
+
+
