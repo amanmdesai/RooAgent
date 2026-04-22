@@ -9,37 +9,33 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: rootproject/root:6.34.00-ubuntu24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v2
-        with:
-          auto-update-conda: true
-          python-version: 3.10
-
-      - name: Create conda env and install dependencies (use mamba)
-        shell: bash -l {0}
+      - name: Install Python tooling
         run: |
-          source $(conda info --base)/etc/profile.d/conda.sh
-          conda install -n base -c conda-forge mamba -y
-          mamba create -n rooenv -y -c conda-forge python=3.10 root numpy pandas pip
-          source $(conda info --base)/etc/profile.d/conda.sh
-          conda activate rooenv
-          pip install --upgrade pip
-          pip install -e .
+          apt-get update
+          apt-get install -y python3-pip python3-venv git
+          python3 -m pip install --upgrade pip setuptools wheel
+
+      - name: Verify ROOT runtime
+        run: |
+          root-config --version
+          python3 -c "import ROOT; print(ROOT.gROOT.GetVersion())"
+
+      - name: Install package and test dependencies
+        run: |
+          python3 -m pip install -e .
+          python3 -m pip install pytest matplotlib
 
       - name: Generate ROOT test files
-        shell: bash -l {0}
         run: |
-          source $(conda info --base)/etc/profile.d/conda.sh
-          conda activate rooenv
-          python tests/gen_test_root_files.py
+          python3 tests/gen_test_root_files.py
 
       - name: Run tests
         shell: bash -l {0}
         run: |
-          source $(conda info --base)/etc/profile.d/conda.sh
-          conda activate rooenv
-          pytest -q tests/
+          python3 -m pytest -q tests/

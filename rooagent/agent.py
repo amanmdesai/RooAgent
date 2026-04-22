@@ -2,8 +2,6 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
 from typing_extensions import TypedDict, Annotated
-from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import InMemorySaver  
 import operator
 import os
 # Import all tools
@@ -16,12 +14,17 @@ SYSTEM_PROMPT = """
 You are a concise, helpful assistant that supports users working with ROOT-based data and analysis tools.
 
 Guidelines:
+- When asked to execute an automated, multi-step workflow (for example: scanning a grid of mass hypotheses), drive the workflow by issuing tool calls until the entire requested work is finished. Do not return a plain natural-language progress update that ends the tool-call loop; only return a final natural-language message after all requested steps and tool calls have completed.
+- ALWAYS issue tool_calls for each analysis step or a clearly-defined batch of steps. Chunk long scans into manageable batches and continue issuing tool_calls until all grid points are processed.
+- Proceed without per-step confirmations when the user requested "automatic execution".
 - Prefer to use the available tools for data access, computation, and plotting instead of fabricating results.
-- Validate user inputs before calling tools; if required parameters are missing or ambiguous, ask a clarifying question.
-- Do not assume or enforce analysis-specific workflows or parameters unless the user provides them.
+- When user-supplied parameters are missing, assume sensible defaults and proceed. Explicitly state which defaults are used (either by including them in tool_call arguments or in the tool response text), e.g. "Using default window=25.0 GeV". Do not silently apply defaults.
+- Validate user inputs before calling tools; if required parameters are missing or ambiguous, ask a clarifying question (unless the user explicitly requested an automatic run).
 - Return concise, factual outputs. When a tool is used, include a brief summary and the tool call (name and arguments) in the response.
 - When producing visualizations or numeric summaries, ensure required numeric arguments are present; otherwise ask for them.
-- Keep responses safe and free of private data.
+- For deterministic behavior, prefer a single tool call at a time unless parallel calls are explicitly needed.
+- If the user asks to apply cuts to a plot, pass cuts explicitly and set apply_cuts_before_plot=True for relevant plotting tools.
+- If encountering token or rate limits, prefer minimal-tool-call continuation (smaller batches) rather than returning a final message.
 """
 
 
@@ -30,11 +33,15 @@ Guidelines:
 # -----------------------------
 DEFAULT_MODEL_NAME = "openai/gpt-4.1"
 MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
+DEFAULT_SEED = int(os.getenv("ROOAGENT_SEED", "7"))
 
 model = ChatOpenAI(
     model=MODEL_NAME,
     api_key=os.getenv("GITHUB_TOKEN"),
-    base_url="https://models.github.ai/inference"
+    base_url="https://models.github.ai/inference",
+    temperature=0,
+    seed=DEFAULT_SEED,
+    top_p=1,
 )
 
 
@@ -59,7 +66,7 @@ tools = [
 
 
 tools_by_name = {tool.name: tool for tool in tools}
-model_with_tools = model.bind_tools(tools)
+model_with_tools = model.bind_tools(tools, parallel_tool_calls=False)
 
 # -----------------------------
 # State Definition
@@ -116,8 +123,7 @@ def should_continue(state: MessagesState):
 builder = StateGraph(MessagesState)
 
 builder.add_node("llm_call", llm_call)
-builder.add_node("tool_node",ToolNode(tools,handle_tool_errors=True)) 
-                                      # tool_node)
+builder.add_node("tool_node", tool_node)
 
 builder.add_edge(START, "llm_call")
 builder.add_conditional_edges("llm_call", should_continue, ["tool_node", END])
