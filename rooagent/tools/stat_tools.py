@@ -2,13 +2,10 @@ from langchain_core.tools import tool
 from .utils import (
     _open_root_file,
     _get_hist,
-    _poisson_tail_ge,
-    _poisson_tail_le,
     _fractional_integral,
-    _significance_from_pvalue,
     _upper_limit_bisect,
+    _stat_summary,
 )
-
 
 
 @tool
@@ -20,62 +17,34 @@ def histogram_significance_and_limits(
     center: float = 50.0,
     window: float = 4.0,
 ) -> str:
-    """Compute exact-Poisson p-values, one-sided Gaussian discovery Z, and CLs from TH1s.
+    """Compute exact-Poisson p-values, discovery Z, and CLs from TH1 histograms.
 
-    Uses exact Poisson tails — valid for any B including low statistics.
-    DiscoverySignificance is reported with one-sided convention (Z >= 0).
-    Prefer this over compute_significance for observed significance.
-    data_name: data histogram; if empty, expected sensitivity assumed (N=S+B).
+    Always reports expected sensitivity (S+B Asimov, n_obs = round(S+B)).
+    If data_name is given, also reports observed quantities.
+    Discovery Z is one-sided (Z >= 0), valid for any B (exact Poisson).
+    CLs = CLs+b / CLb is reported for exclusion cross-check.
     center, window: counting window [center-window, center+window] in x-axis units.
     """
     if not file_path:
         return "Error: file_path is required."
-
     f = _open_root_file(file_path)
     if not f:
         return f"Error: cannot open ROOT file '{file_path}'"
 
-    hbkg = _get_hist(f, bkg_name)
-    hsig = _get_hist(f, sig_name)
+    hbkg, hsig = _get_hist(f, bkg_name), _get_hist(f, sig_name)
     hdata = _get_hist(f, data_name) if data_name else None
+    f.Close()
 
-    missing = []
-    if hbkg is None:
-        missing.append(bkg_name)
-    if hsig is None:
-        missing.append(sig_name)
+    missing = [n for n, h in [(bkg_name, hbkg), (sig_name, hsig)] if h is None]
     if missing:
-        f.Close()
         return f"Error: missing histograms: {', '.join(missing)} in {file_path}"
 
-    n_bkg_frac = _fractional_integral(hbkg, center, window)
-    n_sig_frac = _fractional_integral(hsig, center, window)
-    if hdata:
-        n_data_frac = _fractional_integral(hdata, center, window)
-        n_obs = max(0, int(round(n_data_frac)))
-    else:
-        # expected sensitivity: assume observed = S + B
-        n_obs = max(0, int(round(n_bkg_frac + n_sig_frac)))
+    n_bkg = _fractional_integral(hbkg, center, window)
+    n_sig = _fractional_integral(hsig, center, window)
+    n_obs = max(0, int(round(_fractional_integral(hdata, center, window)))) if hdata is not None else None
 
-    discovery_p_b = _poisson_tail_ge(n_obs, n_bkg_frac)
-    discovery_p_sb = _poisson_tail_ge(n_obs, n_bkg_frac + n_sig_frac)
-    exclusion_clb = _poisson_tail_le(n_obs, n_bkg_frac)
-    exclusion_clsplusb = _poisson_tail_le(n_obs, n_bkg_frac + n_sig_frac)
-    cls = exclusion_clsplusb / exclusion_clb if exclusion_clb > 0.0 else float("inf")
-    significance = _significance_from_pvalue(discovery_p_b, n_obs, n_bkg_frac)
-
-    lines = [
-        f"DiscoveryPValue: {discovery_p_b:.6g}",
-        f"DiscoveryAltPValue: {discovery_p_sb:.6g}",
-        f"DiscoverySignificance: {significance:.6g}",
-        f"CLs: {cls:.6g}",
-        f"CLs+b: {exclusion_clsplusb:.6g}",
-        f"CLb: {exclusion_clb:.6g}",
-    ]
-
-    f.Close()
-    summary = " | ".join(lines)
-    return summary
+    header = f"Window: [{center - window:.4g}, {center + window:.4g}]  N_bkg={n_bkg:.4g}  N_sig={n_sig:.4g}"
+    return f"{header} | {_stat_summary(n_bkg, n_sig, n_obs)}"
 
 
 @tool
@@ -88,61 +57,40 @@ def histogram_upper_limit(
     window: float = 4.0,
     cl: float = 0.95,
 ) -> str:
-    """Compute a CLs upper limit on signal strength mu from TH1 histograms.
+    """Compute CLs upper limit on signal strength mu from TH1 histograms.
 
-    Returns observed and expected (B-only Asimov) upper limits on mu.
-    data_name: if empty, n_obs = round(B) (background-only Asimov).
-    center, window: counting window half-width in x-axis units.
-    cl: confidence level (default 0.95).
+    Always reports expected limit (B-only Asimov, n_obs = round(B)).
+    If data_name is given, also reports observed limit.
+    center, window: counting window half-width in x-axis units. cl: confidence level.
     """
     if not file_path:
         return "Error: file_path is required."
-
     f = _open_root_file(file_path)
     if not f:
         return f"Error: cannot open ROOT file '{file_path}'"
 
-    hbkg = _get_hist(f, bkg_name)
-    hsig = _get_hist(f, sig_name)
+    hbkg, hsig = _get_hist(f, bkg_name), _get_hist(f, sig_name)
     hdata = _get_hist(f, data_name) if data_name else None
+    f.Close()
 
-    missing = []
-    if hbkg is None:
-        missing.append(bkg_name)
-    if hsig is None:
-        missing.append(sig_name)
+    missing = [n for n, h in [(bkg_name, hbkg), (sig_name, hsig)] if h is None]
     if missing:
-        f.Close()
         return f"Error: missing histograms: {', '.join(missing)} in {file_path}"
 
     n_bkg = _fractional_integral(hbkg, center, window)
     n_sig = _fractional_integral(hsig, center, window)
-
     if n_sig <= 0.0:
-        f.Close()
         return "Error: signal yield in window is zero; cannot compute upper limit."
 
-    if hdata:
-        n_data = _fractional_integral(hdata, center, window)
-        n_obs = max(0, int(round(n_data)))
-    else:
-        n_obs = max(0, int(round(n_bkg)))  # background-only Asimov
-
-    n_obs_exp = max(0, int(round(n_bkg)))  # expected (B-only Asimov)
-
-    mu_obs = _upper_limit_bisect(n_obs, n_bkg, n_sig, cl=cl)
-    mu_exp = _upper_limit_bisect(n_obs_exp, n_bkg, n_sig, cl=cl)
-
-    f.Close()
+    n_exp = max(0, int(round(n_bkg)))  # B-only Asimov
+    mu_exp = _upper_limit_bisect(n_exp, n_bkg, n_sig, cl=cl)
 
     lines = [
-        f"CL: {cl:.0%}",
-        f"N_obs: {n_obs}",
-        f"N_bkg: {n_bkg:.4g}",
-        f"N_sig (nominal): {n_sig:.4g}",
-        f"ObservedUpperLimit_mu: {mu_obs:.4g}",
-        f"ExpectedUpperLimit_mu: {mu_exp:.4g}",
-        f"ObservedUpperLimit_yield: {mu_obs * n_sig:.4g}",
-        f"ExpectedUpperLimit_yield: {mu_exp * n_sig:.4g}",
+        f"CL={cl:.0%}  N_bkg={n_bkg:.4g}  N_sig={n_sig:.4g}",
+        f"Expected(B Asimov): N={n_exp}  mu_up={mu_exp:.4g}  yield_up={mu_exp * n_sig:.4g}",
     ]
+    if hdata is not None:
+        n_obs = max(0, int(round(_fractional_integral(hdata, center, window))))
+        mu_obs = _upper_limit_bisect(n_obs, n_bkg, n_sig, cl=cl)
+        lines.append(f"Observed: N={n_obs}  mu_up={mu_obs:.4g}  yield_up={mu_obs * n_sig:.4g}")
     return " | ".join(lines)

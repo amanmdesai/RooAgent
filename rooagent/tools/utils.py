@@ -563,25 +563,11 @@ def _fractional_integral(hist, center: float, window: float) -> float:
 
 
 # Convert an upper-tail p-value to a one-sided discovery Z (Z >= 0).
-def _significance_from_pvalue(pvalue: float, n_obs: int, mean: float) -> float:
-    try:
-        if 0.0 <= pvalue <= 1.0:
-            # ROOT::Math::normal_quantile_c(p, sigma) returns z such that
-            # P(Z >= z) = p for a Normal(0, sigma). For discovery reporting,
-            # deficits are clipped to 0 (one-sided convention).
-            z = float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0))
-            return max(0.0, z)
-    except Exception:
-        pass
-
-    try:
-        if mean > 0.0:
-            z = (float(n_obs) - float(mean)) / math.sqrt(float(mean))
-            return max(0.0, z)
-    except Exception:
-        pass
-
-    return float("nan")
+def _significance_from_pvalue(pvalue: float) -> float:
+    # p=0 → machine-precision overflow; p=1 → Z=0 by convention
+    if not (0.0 < pvalue < 1.0):
+        return 0.0
+    return max(0.0, float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0)))
 
 
 # Compute CLs at signal strength `mu` using Poisson tails (CLs+b / CLb).
@@ -654,4 +640,21 @@ def _compute_significance_from_yields(S: float, B: float, method: str = "simple"
     if b <= 0.0:
         return float("nan")
     return s / math.sqrt(b)
+
+
+# Return compact p0 / Z / CLs summary string: always expected (S+B Asimov), observed if n_obs given.
+def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None) -> str:
+    def _line(n: int) -> str:
+        p0   = _poisson_tail_ge(n, n_bkg)
+        clb  = _poisson_tail_le(n, n_bkg)
+        clspb = _poisson_tail_le(n, n_bkg + n_sig)
+        cls  = clspb / clb if clb > 0.0 else float("inf")
+        z    = _significance_from_pvalue(p0)
+        return f"N={n}  p0={p0:.4g}  Z={z:.4g}\u03c3  CLs={cls:.4g}"
+
+    n_exp = max(0, int(round(n_bkg + n_sig)))
+    result = f"Expected(S+B Asimov): {_line(n_exp)}"
+    if n_obs is not None:
+        result += f" | Observed: {_line(n_obs)}"
+    return result
 

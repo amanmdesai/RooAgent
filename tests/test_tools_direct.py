@@ -358,7 +358,7 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
         hbkg.Fill(1.5)
     for _ in range(5):
         hsig.Fill(1.5)
-    for _ in range(3):
+    for _ in range(3):   # deficit vs B=10
         hdata.Fill(1.5)
 
     hbkg.Write()
@@ -377,17 +377,32 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
         }
     )
 
-    assert "DiscoveryPValue:" in output
-    assert "CLs:" in output
+    # Both expected (S+B Asimov) and observed sections must be present
+    assert "Expected(S+B Asimov):" in output, output
+    assert "Observed:" in output, output
 
-    match = re.search(r"CLs:\s*([0-9.eE+-]+)", output)
-    assert match is not None
-    assert float(match.group(1)) < 1.0
+    # Each section carries p0, Z, CLs
+    p0_values = re.findall(r"p0=([0-9.eE+\-]+)", output)
+    z_values  = re.findall(r"Z=([0-9.eE+\-]+)", output)
+    cls_values = re.findall(r"CLs=([0-9.eE+\-]+)", output)
+    assert len(p0_values) == 2, f"Expected 2 p0 values: {output}"
+    assert len(z_values)  == 2, f"Expected 2 Z values: {output}"
+    assert len(cls_values) == 2, f"Expected 2 CLs values: {output}"
+
+    p0_exp, p0_obs = float(p0_values[0]), float(p0_values[1])
+    z_exp,  z_obs  = float(z_values[0]),  float(z_values[1])
+
+    # Deficit (n_obs=3 < B=10): observed significance lower than expected
+    assert z_obs < z_exp
+    # p0 is a valid probability
+    assert 0.0 <= p0_exp <= 1.0
+    assert 0.0 <= p0_obs <= 1.0
+    # CLs must be < 1 for both
+    assert all(float(c) < 1.0 for c in cls_values)
 
 
 def test_upper_limit_no_excess_analytic(tmp_path):
-    """With n_obs == round(B) (no excess) the observed and expected limits agree
-    and the excluded yield is positive and finite."""
+    """Without data_name: expected (B-only Asimov) limit is shown, no Observed line."""
     root_file = tmp_path / "ul_input.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
 
@@ -399,7 +414,6 @@ def test_upper_limit_no_excess_analytic(tmp_path):
     hsig.Write()
     f.Close()
 
-    # No data_name → observed count = round(B) = 10, same as expected
     output = histogram_upper_limit.invoke(
         {
             "file_path": str(root_file),
@@ -410,16 +424,47 @@ def test_upper_limit_no_excess_analytic(tmp_path):
         }
     )
 
-    assert "ObservedUpperLimit_mu:" in output
-    assert "ExpectedUpperLimit_mu:" in output
+    assert "Expected(B Asimov):" in output
+    assert "Observed:" not in output, "No Observed line without data_name"
 
-    mu_obs = float(re.search(r"ObservedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
-    mu_exp = float(re.search(r"ExpectedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
-
-    # Both limits must be finite and positive
-    assert 0.0 < mu_obs < float("inf")
+    mu_exp = float(re.search(r"mu_up=([0-9.eE+\-]+)", output).group(1))
     assert 0.0 < mu_exp < float("inf")
-    # With no excess observed == expected (same Asimov dataset)
+
+
+def test_upper_limit_both_expected_and_observed_with_data(tmp_path):
+    """With data_name: both Expected (B Asimov) and Observed lines appear."""
+    root_file = tmp_path / "ul_both_input.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    hbkg  = ROOT.TH1F("bkg",  "bkg",  1, 0.0, 2.0)
+    hsig  = ROOT.TH1F("sig",  "sig",  1, 0.0, 2.0)
+    hdata = ROOT.TH1F("data", "data", 1, 0.0, 2.0)
+    hbkg.SetBinContent(1, 10.0)
+    hsig.SetBinContent(1, 5.0)
+    hdata.SetBinContent(1, 10.0)  # n_obs == B → obs ≈ exp
+    hbkg.Write(); hsig.Write(); hdata.Write()
+    f.Close()
+
+    output = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "data_name": "data",
+            "center": 1.0,
+            "window": 1.0,
+        }
+    )
+
+    assert "Expected(B Asimov):" in output, output
+    assert "Observed:" in output, output
+
+    mu_values = re.findall(r"mu_up=([0-9.eE+\-]+)", output)
+    assert len(mu_values) == 2, f"Expected 2 mu_up values: {output}"
+    mu_exp, mu_obs = float(mu_values[0]), float(mu_values[1])
+    assert 0.0 < mu_exp < float("inf")
+    assert 0.0 < mu_obs < float("inf")
+    # n_obs == round(B), so observed ≈ expected
     assert abs(mu_obs - mu_exp) < 1e-6
 
 
@@ -450,10 +495,11 @@ def test_upper_limit_with_data(tmp_path):
         }
     )
 
-    assert "ObservedUpperLimit_mu:" in output
+    assert "Observed:" in output
 
-    mu_obs = float(re.search(r"ObservedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
-    mu_exp = float(re.search(r"ExpectedUpperLimit_mu:\s*([0-9.eE+\-]+)", output).group(1))
+    mu_values = re.findall(r"mu_up=([0-9.eE+\-]+)", output)
+    assert len(mu_values) == 2, f"Expected 2 mu_up values, got: {output}"
+    mu_exp, mu_obs = float(mu_values[0]), float(mu_values[1])
 
     # Deficit → observed limit should be tighter (smaller mu) than expected
     assert mu_obs < mu_exp
@@ -1146,8 +1192,8 @@ def test_stat_tools_with_generated_files():
         "center": 0.0,
         "window": 5.0,
     })
-    assert "DiscoveryPValue:" in output
-    assert "CLs:" in output
+    assert "p0=" in output
+    assert "CLs=" in output
 
     output2 = histogram_upper_limit.invoke({
         "file_path": str(SIGNAL_FILE),
@@ -1156,8 +1202,8 @@ def test_stat_tools_with_generated_files():
         "center": 0.0,
         "window": 5.0,
     })
-    assert "ObservedUpperLimit_mu:" in output2
-    assert "ExpectedUpperLimit_mu:" in output2
+    assert "Expected(B Asimov):" in output2
+    assert "mu_up=" in output2
 
 
 def test_stat_tools_missing_histogram():
