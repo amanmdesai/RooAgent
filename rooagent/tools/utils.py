@@ -1,4 +1,5 @@
 from typing import List, Optional
+from pathlib import Path
 import os
 import re
 import math
@@ -7,6 +8,7 @@ import ROOT
 
 # Module-level counter for unique canvas names shared across tools
 _canvas_counter = [0]
+_roostats_counter = [0]
 
 
 ###############################
@@ -77,21 +79,6 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
 ###############################
 
 
-# Load a TH1 by name from a ROOT file; detach it and return (hist, None) or (None, err).
-def _load_histogram(file_path: str, hist_name: str):
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
-        return None, f"Error: could not open file {file_path}."
-    h = f.Get(hist_name)
-    if not h:
-        f.Close()
-        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
-    h.SetDirectory(0)
-    ROOT.SetOwnership(h, False)
-    f.Close()
-    return h, None
-
-
 def _rebin_hist(hist, rebin: int):
     # Rebin a histogram by integer factor `rebin`, returning the rebinned object.
     try:
@@ -117,44 +104,26 @@ def _rebin_hist(hist, rebin: int):
 
 
 # Parse single or multiple background file inputs into a unique ordered list.
-def _parse_background_inputs(
-    background_file: Optional[str] = None,
-    background_files: Optional[List[str]] = None,
-) -> List[str]:
+def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] = None) -> List[str]:
     parsed: List[str] = []
 
-    if background_file:
-        parsed.extend([p.strip() for p in background_file.split(",") if p.strip()])
+    if primary:
+        parsed.extend([p.strip() for p in primary.split(",") if p.strip()])
 
-    if background_files:
-        parsed.extend([p.strip() for p in background_files if p and p.strip()])
-
-    unique = list(dict.fromkeys(parsed))
-    return unique
-
-
-# Parse primary and additional file inputs into a deduplicated ordered list.
-def _parse_file_inputs(
-    primary_file: Optional[str] = None,
-    additional_files: Optional[List[str]] = None,
-) -> List[str]:
-    parsed: List[str] = []
-
-    if primary_file:
-        parsed.extend([p.strip() for p in primary_file.split(",") if p.strip()])
-
-    if additional_files:
-        parsed.extend([p.strip() for p in additional_files if p and p.strip()])
+    if additional:
+        parsed.extend([p.strip() for p in additional if p and p.strip()])
 
     return list(dict.fromkeys(parsed))
 
 
-def _to_float_list(v):
-    """Convert string/iterable/number input into a list of floats.
+# Note: Use _parse_paths directly for parsing file inputs (replaces removed
+# _parse_background_inputs and _parse_file_inputs wrappers).
 
-    Accepts a comma-separated string, a list/tuple of numbers/strings, or a
-    single numeric value. Returns an empty list for None.
-    """
+
+def _to_float_list(v):
+    # Convert string/iterable/number input into a list of floats.
+    # Accepts a comma-separated string, a list/tuple of numbers/strings, or a
+    # single numeric value. Returns an empty list for None.
     if v is None:
         return []
     if isinstance(v, str):
@@ -278,17 +247,21 @@ def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], v
 def _resolve_weight_branch(df, weight_branch: str) -> str:
     if not weight_branch:
         return ""
-
-    columns = [str(c) for c in df.GetColumnNames()]
-    return weight_branch if weight_branch in columns else ""
+    return weight_branch if _has_column(df, weight_branch) else ""
 
 
 # Load a TH1 and optionally rebin it; returns (hist, None) or (None, error_message).
 def _load_hist(file_path: str, hist_name: str, rebin: int):
-    h, err = _load_histogram(file_path, hist_name)
-    if err:
-        return None, err
-
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return None, f"Error: could not open file {file_path}."
+    h = f.Get(hist_name)
+    if not h:
+        f.Close()
+        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+    f.Close()
     h = _rebin_hist(h, rebin)
     return h, None
 
@@ -322,6 +295,44 @@ def _build_tree_hist(
     ROOT.SetOwnership(h, False)
     h.SetDirectory(0)
     h = _rebin_hist(h, rebin)
+    return h
+
+
+# Build and return a TH1 for `variable` from a TTree (used by rdataframe_tools)
+def _tree_variable_to_histogram(
+    file_path: str,
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    cuts: Optional[List[str]] = None,
+    vector_mode: str = "all",
+    weight: Optional[str] = None,
+):
+    df = ROOT.RDataFrame(tree_name, file_path)
+
+    if cuts:
+        vector_vars = _get_vector_branches(file_path, tree_name)
+        for cut in cuts:
+            safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
+            df = df.Filter(safe_cut)
+
+    if weight and _has_column(df, weight):
+        wname = weight
+    else:
+        wname = "__rooagent_unit_weight"
+        df = df.Define(wname, "1.0")
+
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    hist_name = f"h_{stem}_{variable}"
+    hist_ptr = df.Histo1D((hist_name, hist_name, int(bins), float(xmin), float(xmax)), variable, wname)
+    h = hist_ptr.GetValue()
+    try:
+        h.SetDirectory(0)
+        ROOT.SetOwnership(h, False)
+    except Exception:
+        pass
     return h
 
 
@@ -489,6 +500,635 @@ def _draw_overlay_plot(
     return output_pdf
 
 
+# The following plotting helper wrappers were moved from plot_tools.py so
+# that only @tool-decorated entry points remain in plot_tools.  These
+# functions are plain helpers (not LangChain tools) and belong in utils.
+
+
+def _plot_hist(
+    file_path: str,
+    hist_name: str,
+    output_pdf: str,
+    xlabel: str,
+    ylabel: str,
+    logy: bool,
+    normalize: bool,
+    rebin: int,
+):
+    h, err = _load_hist(file_path, hist_name, rebin)
+    if err:
+        return err
+
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
+
+    h.SetLineColor(ROOT.kBlue + 1)
+    h.SetLineWidth(3)
+
+    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
+    legend.AddEntry(h, hist_name, "l")
+
+    result = _draw_overlay_plot(
+        hist_list=[h],
+        legend=legend,
+        output_pdf=output_pdf,
+        x_title=xlabel,
+        y_title="Normalized Events" if normalize else ylabel,
+        canvas_name="c_hist",
+        canvas_title="Histogram",
+        show_ratio=False,
+        logy=logy,
+    )
+    if result == "No histograms created.":
+        return "Error: No histograms were found."
+
+    return f"Saved 1D histogram {hist_name} to {output_pdf}"
+
+
+def _plot_tree(
+    file_path: str,
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    output_pdf: str,
+    normalize: bool,
+    weight_branch: str,
+    cuts: Optional[List[str]],
+    rebin: int,
+    vector_mode: str,
+):
+    h = _build_tree_hist(
+        file_path=file_path,
+        tree_name=tree_name,
+        variable=variable,
+        bins=bins,
+        xmin=xmin,
+        xmax=xmax,
+        hist_name=variable,
+        weight_branch=weight_branch,
+        cuts=cuts,
+        vector_mode=vector_mode,
+        rebin=rebin,
+    )
+
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
+
+    h.SetLineColor(ROOT.kBlue + 1)
+    h.SetLineWidth(3)
+
+    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
+    legend.AddEntry(h, variable, "l")
+
+    result = _draw_overlay_plot(
+        hist_list=[h],
+        legend=legend,
+        output_pdf=output_pdf,
+        x_title=variable,
+        y_title="Normalized Events" if normalize else "Events",
+        canvas_name="c_tree",
+        canvas_title="Tree Variable",
+        show_ratio=False,
+    )
+    if result == "No histograms created.":
+        return "Error: No histograms were found."
+
+    return f"Saved plot to {output_pdf}"
+
+
+def _plot_tree_compare(
+    file_paths: List[str],
+    tree_name: str,
+    variables: List[str],
+    bins: int,
+    xmin: float,
+    xmax: float,
+    legends: List[str],
+    output_pdf: str,
+    normalize: bool,
+    show_ratio: bool,
+    rebin: int,
+    weight_branch: str,
+    cuts: Optional[List[str]],
+    vector_mode: str,
+):
+    if not (len(file_paths) == len(variables) == len(legends)):
+        return "Error: file_paths, variables, and legends must have the same length."
+
+    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
+    colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+    hist_list = []
+
+    for i, (fpath, var, label) in enumerate(zip(file_paths, variables, legends)):
+        h = _build_tree_hist(
+            file_path=fpath,
+            tree_name=tree_name,
+            variable=var,
+            bins=bins,
+            xmin=xmin,
+            xmax=xmax,
+            hist_name=f"h{i}",
+            weight_branch=weight_branch,
+            cuts=cuts,
+            vector_mode=vector_mode,
+            rebin=rebin,
+        )
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
+        h.SetLineColor(colors[i % len(colors)])
+        h.SetLineWidth(3)
+        h.SetTitle("")
+        hist_list.append(h)
+        legend.AddEntry(h, label, "l")
+
+    result = _draw_overlay_plot(
+        hist_list=hist_list,
+        legend=legend,
+        output_pdf=output_pdf,
+        x_title=variables[0],
+        y_title="Normalized Events" if normalize else "Events",
+        canvas_name="c_tree_compare",
+        canvas_title="Tree Comparison",
+        show_ratio=show_ratio,
+    )
+    if result == "No histograms created.":
+        return result
+
+    return f"Saved comparison histogram to {output_pdf}"
+
+
+def _plot_hist_compare(
+    file_paths: List[str],
+    hist_names: List[str],
+    legends: List[str],
+    output_pdf: str,
+    xlabel: str,
+    ylabel: str,
+    logy: bool,
+    normalize: bool,
+    show_ratio: bool,
+    rebin: int,
+):
+    if not (len(file_paths) == len(hist_names) == len(legends)):
+        return "Error: file_paths, hist_names, and legends must have the same length."
+
+    legend = ROOT.TLegend(0.65, 0.7, 0.9, 0.9)
+    legend.SetBorderSize(0)
+    legend.SetFillColor(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.035)
+
+    colors = [ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7, ROOT.kCyan + 2]
+    hist_list = []
+    skipped = []
+
+    for i, (fpath, hname, label) in enumerate(zip(file_paths, hist_names, legends)):
+        h, err = _load_hist(fpath, hname, rebin)
+        if err:
+            skipped.append(err)
+            continue
+
+        if normalize and h.Integral() > 0:
+            h.Scale(1.0 / h.Integral())
+
+        h.SetLineColor(colors[i % len(colors)])
+        h.SetLineWidth(3)
+        h.SetLineStyle(1 + i % 4)
+        hist_list.append(h)
+        legend.AddEntry(h, label, "l")
+
+    if not hist_list:
+        return "Error: No histograms were found."
+
+    x_axis_title = xlabel if xlabel else hist_list[0].GetXaxis().GetTitle()
+    result = _draw_overlay_plot(
+        hist_list=hist_list,
+        legend=legend,
+        output_pdf=output_pdf,
+        x_title=x_axis_title,
+        y_title="Normalized Events" if normalize else ylabel,
+        canvas_name="c_hist_compare",
+        canvas_title="Histogram Comparison",
+        show_ratio=show_ratio,
+        logy=logy,
+    )
+    if result == "No histograms created.":
+        return "Error: No histograms were found."
+
+    msg = f"Saved combined histogram plot to {output_pdf}"
+    if skipped:
+        msg += "\nWarnings:\n" + "\n".join(f"  - {s}" for s in skipped)
+    return msg
+
+
+def _plot_signal_vs_backgrounds(
+    signal_file: str,
+    signal_files: Optional[List[str]],
+    signal_label: str,
+    signal_labels: Optional[List[str]],
+    background_files: Optional[List[str]],
+    background_labels: Optional[List[str]],
+    data_file: str,
+    data_label: str,
+    plot_data: bool,
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    output_pdf: str,
+    normalize: bool,
+    show_ratio: bool,
+    rebin: int,
+    weight_branch: str,
+    cuts: Optional[List[str]],
+    vector_mode: str,
+    apply_cuts_before_plot: bool,
+):
+    if apply_cuts_before_plot and not cuts:
+        return "Error: apply_cuts_before_plot=True but no 'cuts' provided. Please provide a non-empty cuts list."
+
+    signal_paths = _parse_paths(signal_file, signal_files)
+    if not signal_paths:
+        return "Error: at least one signal file must be provided via signal_file or signal_files."
+
+    background_paths = _parse_paths(additional=background_files)
+    if not background_paths:
+        return "Error: background_files cannot be empty."
+
+    if signal_labels is None:
+        if len(signal_paths) == 1:
+            signal_labels = [Path(signal_paths[0]).stem if signal_label == "Signal" else signal_label]
+        else:
+            signal_labels = [Path(p).stem for p in signal_paths]
+
+    if len(signal_labels) != len(signal_paths):
+        return "Error: number of signal_labels must match number of signal files."
+
+    if background_labels is None:
+        background_labels = [Path(p).stem for p in background_paths]
+
+    if len(background_labels) != len(background_paths):
+        return "Error: number of background_labels must match number of background_files."
+
+    wants_data = plot_data or bool(data_file.strip())
+    if wants_data and not data_file.strip():
+        return "Error: data_file must be provided when plot_data is True."
+
+    effective_cuts = cuts if apply_cuts_before_plot else None
+
+    signal_hists = []
+    background_hists = []
+
+    signal_line_colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+    signal_hatch_styles = [3345, 3354, 3395, 3444, 3490]
+    background_fill_colors = [
+        ROOT.kAzure - 9,
+        ROOT.kOrange - 2,
+        ROOT.kSpring - 6,
+        ROOT.kPink - 8,
+        ROOT.kViolet - 6,
+        ROOT.kCyan - 6,
+    ]
+
+    for i, fpath in enumerate(background_paths):
+        h = _build_tree_hist(
+            file_path=fpath,
+            tree_name=tree_name,
+            variable=variable,
+            bins=bins,
+            xmin=xmin,
+            xmax=xmax,
+            hist_name=f"h_sigbkg_bkg_{i}",
+            weight_branch=weight_branch,
+            cuts=effective_cuts,
+            vector_mode=vector_mode,
+            rebin=rebin,
+        )
+        h.SetFillColor(background_fill_colors[i % len(background_fill_colors)])
+        h.SetLineColor(ROOT.kBlack)
+        h.SetLineWidth(1)
+        background_hists.append(h)
+
+    for i, fpath in enumerate(signal_paths):
+        h = _build_tree_hist(
+            file_path=fpath,
+            tree_name=tree_name,
+            variable=variable,
+            bins=bins,
+            xmin=xmin,
+            xmax=xmax,
+            hist_name=f"h_sigbkg_sig_{i}",
+            weight_branch=weight_branch,
+            cuts=effective_cuts,
+            vector_mode=vector_mode,
+            rebin=rebin,
+        )
+        line_color = signal_line_colors[i % len(signal_line_colors)]
+        h.SetFillStyle(0)
+        h.SetLineColor(line_color)
+        h.SetLineWidth(3)
+        h.SetLineStyle(1 + (i % 4))
+        signal_hists.append(h)
+
+    data_hist = None
+    if wants_data:
+        data_hist = _build_tree_hist(
+            file_path=data_file,
+            tree_name=tree_name,
+            variable=variable,
+            bins=bins,
+            xmin=xmin,
+            xmax=xmax,
+            hist_name="h_sigbkg_data",
+            weight_branch="",
+            cuts=effective_cuts,
+            vector_mode=vector_mode,
+            rebin=rebin,
+        )
+        data_hist.SetFillStyle(0)
+        data_hist.SetMarkerStyle(20)
+        data_hist.SetMarkerSize(1.0)
+        data_hist.SetMarkerColor(ROOT.kBlack)
+        data_hist.SetLineColor(ROOT.kBlack)
+        data_hist.SetLineWidth(1)
+
+    y_title = "Normalized Events" if normalize else "Events"
+    if normalize:
+        for i, h in enumerate(background_hists):
+            if h.Integral() > 0:
+                h.Scale(1.0 / h.Integral())
+            h.SetFillStyle(0)
+            h.SetLineColor(background_fill_colors[i % len(background_fill_colors)])
+            h.SetLineWidth(2)
+
+        for h in signal_hists:
+            if h.Integral() > 0:
+                h.Scale(1.0 / h.Integral())
+
+        if data_hist and data_hist.Integral() > 0:
+            data_hist.Scale(1.0 / data_hist.Integral())
+
+    use_stack = wants_data and not normalize
+
+    if use_stack:
+        for i, h in enumerate(signal_hists):
+            line_color = signal_line_colors[i % len(signal_line_colors)]
+            h.SetFillStyle(signal_hatch_styles[i % len(signal_hatch_styles)])
+            h.SetFillColor(line_color)
+            h.SetLineColor(line_color)
+            h.SetLineWidth(2)
+            h.SetLineStyle(1)
+
+    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
+    legend.SetFillStyle(0)
+    legend.SetBorderSize(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.035)
+
+    if data_hist:
+        legend.AddEntry(data_hist, data_label, "lep")
+
+    sig_legend_opt = "f" if use_stack else "l"
+    for h, label in reversed(list(zip(signal_hists, signal_labels))):
+        legend.AddEntry(h, label, sig_legend_opt)
+
+    bkg_legend_opt = "l" if normalize else "f"
+    for h, label in reversed(list(zip(background_hists, background_labels))):
+        legend.AddEntry(h, label, bkg_legend_opt)
+
+    canvas, upper_pad, lower_pad = _create_plot_pads(
+        _unique_canvas_name("c_sig_bkg"), "Signal vs Backgrounds", show_ratio
+    )
+    draw_pad = upper_pad if upper_pad else canvas
+    draw_pad.cd()
+
+    if not use_stack:
+        hist_list = background_hists + signal_hists + ([data_hist] if data_hist else [])
+        draw_options = ["HIST"] * (len(background_hists) + len(signal_hists))
+        if data_hist:
+            draw_options.append("PE1")
+
+        result = _draw_overlay_plot(
+            hist_list=hist_list,
+            legend=legend,
+            output_pdf=output_pdf,
+            x_title=variable,
+            y_title=y_title,
+            canvas_name="c_sig_bkg_overlay",
+            canvas_title="Signal vs Backgrounds",
+            show_ratio=show_ratio,
+            draw_options=draw_options,
+        )
+        if result == "No histograms created.":
+            return result
+
+        if show_ratio and lower_pad is not None:
+            # Keep a physics-meaningful ratio panel for this mode.
+            all_bkg = background_hists[0].Clone("h_all_bkg_ratio")
+            all_bkg.SetDirectory(0)
+            ROOT.SetOwnership(all_bkg, False)
+            for h in background_hists[1:]:
+                all_bkg.Add(h)
+
+            lower_pad.cd()
+            if data_hist:
+                ratio = data_hist.Clone("h_data_bkg_ratio")
+                ratio.SetDirectory(0)
+                ROOT.SetOwnership(ratio, False)
+                ratio.Divide(all_bkg)
+                _style_ratio_hist(ratio, variable, "Data/Bkg")
+                ratio.Draw("PE1")
+            else:
+                ratio = _build_signal_background_ratio(signal_hists[0], background_hists)
+                _style_ratio_hist(ratio, variable, "Sig/Bkg")
+                ratio.Draw("HIST")
+
+            x_axis = ratio.GetXaxis()
+            unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+            ROOT.SetOwnership(unity, False)
+            unity.SetLineStyle(2)
+            unity.SetLineColor(ROOT.kGray + 2)
+            unity.Draw()
+
+            canvas.Update()
+            canvas.SaveAs(output_pdf)
+
+        return f"Saved signal-vs-background comparison to {output_pdf}"
+
+    stack = ROOT.THStack("hs_sig_bkg", "")
+    ROOT.SetOwnership(stack, False)
+    for h in background_hists:
+        stack.Add(h)
+    for h in signal_hists:
+        stack.Add(h)
+
+    stack.Draw("HIST")
+    stack.GetXaxis().SetTitle(variable)
+    stack.GetYaxis().SetTitle(y_title)
+    if show_ratio:
+        stack.GetXaxis().SetLabelSize(0)
+        stack.GetXaxis().SetTitleSize(0)
+        stack.GetYaxis().SetTitleSize(0.055)
+        stack.GetYaxis().SetLabelSize(0.045)
+
+    stack_max = stack.GetMaximum()
+    data_max = data_hist.GetMaximum() if data_hist else 0.0
+    stack.SetMaximum(max(stack_max, data_max) * 1.35)
+
+    all_mc_hists = background_hists + signal_hists
+    mc_stat_band = all_mc_hists[0].Clone("h_mc_stat_band")
+    mc_stat_band.SetDirectory(0)
+    ROOT.SetOwnership(mc_stat_band, False)
+    for h in all_mc_hists[1:]:
+        mc_stat_band.Add(h)
+    mc_stat_band.SetFillStyle(3354)
+    mc_stat_band.SetFillColor(ROOT.kGray + 2)
+    mc_stat_band.SetLineColor(ROOT.kGray + 2)
+    mc_stat_band.SetMarkerSize(0)
+    mc_stat_band.Draw("E2 SAME")
+
+    if data_hist:
+        data_hist.Draw("PE1 SAME")
+
+    legend.Draw()
+
+    if show_ratio and lower_pad is not None:
+        total_mc = all_mc_hists[0].Clone("h_total_mc_for_ratio")
+        total_mc.SetDirectory(0)
+        ROOT.SetOwnership(total_mc, False)
+        for h in all_mc_hists[1:]:
+            total_mc.Add(h)
+
+        ratio = data_hist.Clone("h_data_mc_ratio")
+        ratio.SetDirectory(0)
+        ROOT.SetOwnership(ratio, False)
+        ratio.Divide(data_hist, total_mc, 1.0, 1.0, "B")
+
+        lower_pad.cd()
+        _style_ratio_hist(ratio, variable, "Data/MC")
+        ratio.Draw("PE1")
+
+        x_axis = ratio.GetXaxis()
+        unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+        ROOT.SetOwnership(unity, False)
+        unity.SetLineStyle(2)
+        unity.SetLineColor(ROOT.kGray + 2)
+        unity.Draw()
+
+    canvas.Update()
+    canvas.SaveAs(output_pdf)
+    return f"Saved signal-vs-background comparison to {output_pdf}"
+
+
+def _plot_2d_hist(
+    file_path: str,
+    hist_name: str,
+    output_pdf: str,
+    xlabel: str,
+    ylabel: str,
+    zlabel: str = "",
+    logz: bool = False,
+    normalize: bool = False,
+    rebin_x: int = 1,
+    rebin_y: int = 2,
+    color_palette: int = 1,
+):
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return f"Error: Could not open file {file_path}"
+
+    h = f.Get(hist_name)
+    if not h:
+        f.Close()
+        return f"Error: Histogram {hist_name} not found in file {file_path}"
+
+    h.SetDirectory(0)
+    ROOT.SetOwnership(h, False)
+    f.Close()
+
+    if rebin_x > 1:
+        h.RebinX(rebin_x)
+    if rebin_y > 1:
+        h.RebinY(rebin_y)
+
+    if normalize and h.Integral() > 0:
+        h.Scale(1.0 / h.Integral())
+
+    canv = ROOT.TCanvas(_unique_canvas_name("c2d"), "2D Histogram", 900, 700)
+
+    h.GetXaxis().SetTitle(xlabel)
+    h.GetYaxis().SetTitle(ylabel)
+    h.GetZaxis().SetTitle(zlabel)
+
+    if logz:
+        canv.SetLogz(1)
+
+    ROOT.gStyle.SetPalette(color_palette)
+    h.Draw("COLZ")
+
+    canv.Update()
+    canv.SaveAs(output_pdf)
+    return f"Saved 2D histogram to {output_pdf}"
+
+
+def _plot_2d_tree(
+    file_path: str,
+    tree_name: str,
+    x_branch: str,
+    y_branch: str,
+    output_pdf: str,
+    bins_x: int,
+    xmin: float,
+    xmax: float,
+    bins_y: int,
+    ymin: float,
+    ymax: float,
+    xlabel: str,
+    ylabel: str,
+    color_palette: int,
+):
+    f = ROOT.TFile.Open(file_path)
+    if not f or f.IsZombie():
+        return f"Error: Could not open file {file_path}"
+
+    tree = f.Get(tree_name)
+    if not tree:
+        f.Close()
+        return f"Error: TTree {tree_name} not found in {file_path}"
+
+    h2 = ROOT.TH2F(
+        _unique_canvas_name("h2"),
+        "",
+        bins_x,
+        xmin,
+        xmax,
+        bins_y,
+        ymin,
+        ymax,
+    )
+    ROOT.SetOwnership(h2, False)
+
+    tree.Draw(f"{y_branch}:{x_branch} >> {h2.GetName()}", "", "goff")
+
+    canv = ROOT.TCanvas(_unique_canvas_name("c2d_tree"), "2D Histogram", 900, 700)
+    h2.GetXaxis().SetTitle(xlabel if xlabel else x_branch)
+    h2.GetYaxis().SetTitle(ylabel if ylabel else y_branch)
+
+    ROOT.gStyle.SetPalette(color_palette)
+    h2.Draw("COLZ")
+
+    canv.Update()
+    canv.SaveAs(output_pdf)
+    f.Close()
+
+    return f"Saved 2D histogram ({y_branch} vs {x_branch}) to {output_pdf}"
+
+
 ###############################
 # stat_tools.py helpers
 ###############################
@@ -509,38 +1149,214 @@ def _get_hist(f, name: str):
     return h
 
 
-# Compute the Poisson tail P(N >= n_obs) using ROOT when available, else fallback numeric.
-def _poisson_tail_ge(n_obs: int, mean: float) -> float:
-    n_obs = int(n_obs)
-    mean = max(0.0, float(mean))
-    if n_obs <= 0:
-        return 1.0
-    if mean == 0.0:
-        return 0.0
-    try:
-        return float(ROOT.Math.poisson_cdf_c(n_obs - 1, mean))
-    except Exception:
-        total = 0.0
-        for k in range(0, n_obs):
-            total += math.exp(k * math.log(mean) - math.lgamma(k + 1) - mean)
-        return max(0.0, min(1.0, 1.0 - total))
+# Minimal counting: use the provided single `file_path` and explicit
+# histogram names. Upstream stages are expected to validate inputs.
+def _counting_window_inputs(
+    file_path: str,
+    bkg_name: str,
+    sig_name: str,
+    data_name: str,
+    center: float,
+    window: float,
+):
+    if not file_path:
+        return None, "Error: file_path is required."
+
+    p = str(file_path).strip()
+    if not p:
+        return None, "Error: file_path is required."
+
+    f = _open_root_file(p)
+    if not f:
+        return None, f"Error: could not open file {p}."
+
+    hbkg = _get_hist(f, bkg_name)
+    hsig = _get_hist(f, sig_name)
+    hdata = _get_hist(f, data_name) if data_name and data_name.strip() else None
+
+    f.Close()
+
+    if hbkg is None or hsig is None:
+        return None, "Error: required histograms not found in file."
+
+    n_bkg = _fractional_integral(hbkg, center, window)
+    n_sig = _fractional_integral(hsig, center, window)
+    n_obs = None
+    if hdata is not None:
+        n_obs = max(0, int(round(_fractional_integral(hdata, center, window))))
+
+    return {"n_bkg": n_bkg, "n_sig": n_sig, "n_obs": n_obs}, None
 
 
-# Compute the Poisson tail P(N <= n_obs) using ROOT when available, else fallback numeric.
-def _poisson_tail_le(n_obs: int, mean: float) -> float:
-    n_obs = int(n_obs)
-    mean = max(0.0, float(mean))
-    if n_obs < 0:
+# RooStats NumberCountingUtils is unstable at exactly zero uncertainty.
+_ROOSTATS_FRACTIONAL_B_UNCERTAINTY = 1e-4
+
+
+# Create unique names for RooFit/RooStats objects.
+def _next_roostats_tag() -> str:
+    _roostats_counter[0] += 1
+    return f"{_roostats_counter[0]}"
+
+
+# Keep probabilities in the physical range.
+def _roostats_clip_probability(value: float) -> float:
+    if not math.isfinite(value):
         return 0.0
-    if mean == 0.0:
-        return 1.0
+    return max(0.0, min(1.0, float(value)))
+
+
+# Map expected background to a stable NumberCountingUtils uncertainty input.
+def _roostats_fractional_b_uncertainty(mean: float) -> float:
+    if mean <= 0.0:
+        return 0.0
+    return _ROOSTATS_FRACTIONAL_B_UNCERTAINTY
+
+
+# Build a one-channel counting model for RooStats asymptotic tools.
+def _build_roostats_counting_model(n_obs: int, n_bkg: float, n_sig: float):
+    n_obs_val = max(0, int(n_obs))
+    n_bkg_val = max(0.0, float(n_bkg))
+    n_sig_val = max(0.0, float(n_sig))
+
+    tag = _next_roostats_tag()
+    ws = ROOT.RooWorkspace(f"ws_stat_{tag}")
+
+    max_obs = max(
+        float(n_obs_val) + 10.0 * math.sqrt(max(float(n_obs_val), 1.0)) + 20.0,
+        n_bkg_val + n_sig_val + 20.0,
+        50.0,
+    )
+
+    ws.factory(f"nobs_{tag}[{float(n_obs_val):.12g},0,{max_obs:.12g}]")
+    ws.factory(f"bexp_{tag}[{n_bkg_val:.12g}]")
+    ws.factory(f"sexp_{tag}[{n_sig_val:.12g}]")
+    ws.factory(f"mu_{tag}[1,0,10000]")
+    ws.factory(f"prod::sigterm_{tag}(mu_{tag},sexp_{tag})")
+    ws.factory(f"sum::mean_{tag}(sigterm_{tag},bexp_{tag})")
+    ws.factory(f"Poisson::model_{tag}(nobs_{tag},mean_{tag})")
+
+    nobs_var = ws.var(f"nobs_{tag}")
+    bexp_var = ws.var(f"bexp_{tag}")
+    sexp_var = ws.var(f"sexp_{tag}")
+    mu_var = ws.var(f"mu_{tag}")
+    model_pdf = ws.pdf(f"model_{tag}")
+
+    bexp_var.setConstant(True)
+    sexp_var.setConstant(True)
+
+    observables = ROOT.RooArgSet(nobs_var)
+    poi = ROOT.RooArgSet(mu_var)
+
+    data = ROOT.RooDataSet(f"data_{tag}", f"data_{tag}", observables)
+    nobs_var.setVal(float(n_obs_val))
+    data.add(observables)
+
+    sb_model = ROOT.RooStats.ModelConfig(f"sb_{tag}", ws)
+    sb_model.SetPdf(model_pdf)
+    sb_model.SetObservables(observables)
+    sb_model.SetParametersOfInterest(poi)
+    mu_var.setVal(1.0)
+    sb_snapshot = ROOT.RooArgSet(mu_var)
+    sb_model.SetSnapshot(sb_snapshot)
+
+    b_model = ROOT.RooStats.ModelConfig(f"b_{tag}", ws)
+    b_model.SetPdf(model_pdf)
+    b_model.SetObservables(observables)
+    b_model.SetParametersOfInterest(poi)
+    mu_var.setVal(0.0)
+    b_snapshot = ROOT.RooArgSet(mu_var)
+    b_model.SetSnapshot(b_snapshot)
+
+    mu_var.setVal(1.0)
+    return {
+        "workspace": ws,
+        "data": data,
+        "mu_var": mu_var,
+        "sb_model": sb_model,
+        "b_model": b_model,
+    }
+
+
+# Get a RooStats HypoTestResult with explicit null/alternate ordering.
+def _roostats_hypotest_result(n_obs: int, n_bkg: float, n_sig: float, null_is_sb: bool):
     try:
-        return float(ROOT.Math.poisson_cdf(n_obs, mean))
+        model = _build_roostats_counting_model(n_obs, n_bkg, n_sig)
+        null_model = model["sb_model"] if null_is_sb else model["b_model"]
+        alt_model = model["b_model"] if null_is_sb else model["sb_model"]
+
+        calculator = ROOT.RooStats.AsymptoticCalculator(model["data"], alt_model, null_model)
+        calculator.SetOneSided(True)
+        calculator.SetQTilde(True)
+        return calculator.GetHypoTest()
     except Exception:
-        total = 0.0
-        for k in range(0, n_obs + 1):
-            total += math.exp(k * math.log(mean) - math.lgamma(k + 1) - mean)
-        return max(0.0, min(1.0, total))
+        return None
+
+
+# Compute CLs, CLs+b, CLb using RooStats exclusion convention (null = s+b).
+def _roostats_exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
+    result = _roostats_hypotest_result(n_obs, n_bkg, n_sig, null_is_sb=True)
+    if result is None:
+        return float("nan"), float("nan"), float("nan")
+
+    clspb = _roostats_clip_probability(float(result.CLsplusb()))
+    clb = _roostats_clip_probability(float(result.CLb()))
+    cls = float(result.CLs())
+    if not math.isfinite(cls):
+        cls = clspb / clb if clb > 0.0 else float("inf")
+    return cls, clspb, clb
+
+
+# Compute mu upper limit at confidence level cl using RooStats HypoTestInverter.
+def _roostats_upper_limit(
+    n_obs: int,
+    n_bkg: float,
+    n_sig_nominal: float,
+    cl: float = 0.95,
+) -> float:
+    if n_sig_nominal <= 0.0:
+        return float("inf")
+
+    try:
+        model = _build_roostats_counting_model(n_obs, n_bkg, n_sig_nominal)
+        mu_var = model["mu_var"]
+        calculator = ROOT.RooStats.AsymptoticCalculator(
+            model["data"], model["b_model"], model["sb_model"]
+        )
+        calculator.SetOneSided(True)
+        calculator.SetQTilde(True)
+
+        mu_scan_max = max(
+            5.0,
+            (
+                max(float(n_obs), float(n_bkg) + 5.0 * math.sqrt(max(float(n_bkg), 1.0)))
+                - float(n_bkg)
+            )
+            / max(float(n_sig_nominal), 1e-9)
+            + 5.0,
+        )
+
+        for _ in range(8):
+            mu_var.setRange(0.0, max(10.0, mu_scan_max * 2.0))
+
+            inverter = ROOT.RooStats.HypoTestInverter(calculator, mu_var, 1.0 - float(cl))
+            inverter.SetConfidenceLevel(float(cl))
+            inverter.UseCLs(True)
+            inverter.SetVerbose(0)
+            inverter.RunFixedScan(120, 0.0, float(mu_scan_max))
+
+            interval = inverter.GetInterval()
+            if interval is not None:
+                mu_up = float(interval.UpperLimit())
+                if math.isfinite(mu_up) and mu_up < 0.98 * mu_scan_max:
+                    return mu_up
+
+            mu_scan_max *= 2.0
+            if mu_scan_max > 1e6:
+                break
+    except Exception:
+        return float("inf")
+
+    return float("inf")
 
 
 # Compute the fractional integral of `hist` over [center-window, center+window], handling partial bins.
@@ -564,51 +1380,20 @@ def _fractional_integral(hist, center: float, window: float) -> float:
 
 # Convert an upper-tail p-value to a one-sided discovery Z (Z >= 0).
 def _significance_from_pvalue(pvalue: float) -> float:
-    # p=0 → machine-precision overflow; p=1 → Z=0 by convention
-    if not (0.0 < pvalue < 1.0):
+    pvalue_val = _roostats_clip_probability(float(pvalue))
+    if not (0.0 < pvalue_val < 1.0):
         return 0.0
-    return max(0.0, float(ROOT.Math.normal_quantile_c(float(pvalue), 1.0)))
+    try:
+        z_value = float(ROOT.RooStats.PValueToSignificance(pvalue_val))
+        if not math.isfinite(z_value):
+            return 0.0
+        return max(0.0, z_value)
+    except Exception:
+        return 0.0
 
 
-# Compute CLs at signal strength `mu` using Poisson tails (CLs+b / CLb).
-def _cls_at_mu(n_obs: int, n_bkg: float, n_sig_nominal: float, mu: float) -> float:
-    expected_sb = n_bkg + mu * n_sig_nominal
-    clb = _poisson_tail_le(n_obs, n_bkg)
-    clsplusb = _poisson_tail_le(n_obs, expected_sb)
-    if clb <= 0.0:
-        return float("inf")
-    return clsplusb / clb
-
-
-# Find the CLs upper limit on mu by bisection to the target confidence level.
-def _upper_limit_bisect(
-    n_obs: int,
-    n_bkg: float,
-    n_sig_nominal: float,
-    cl: float = 0.95,
-    mu_max: float = 20.0,
-    n_iter: int = 60,
-) -> float:
-    target = 1.0 - cl  # e.g. 0.05 for 95% CL
-
-    # CLs is a decreasing function of mu; ensure bracket exists
-    if _cls_at_mu(n_obs, n_bkg, n_sig_nominal, 0.0) <= target:
-        return 0.0  # already excluded at mu=0 (degenerate case)
-
-    # Expand upper bracket if needed
-    while _cls_at_mu(n_obs, n_bkg, n_sig_nominal, mu_max) > target:
-        mu_max *= 2.0
-        if mu_max > 1e6:
-            return float("inf")
-
-    lo, hi = 0.0, mu_max
-    for _ in range(n_iter):
-        mid = 0.5 * (lo + hi)
-        if _cls_at_mu(n_obs, n_bkg, n_sig_nominal, mid) > target:
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
+# Note: profile-likelihood extraction was removed; convert p-values to
+# discovery significance using the canonical `_significance_from_pvalue`.
 
 
 # Asymptotic (Cowan) significance for expected S+B vs B yields.
@@ -620,11 +1405,23 @@ def _asymptotic_significance(n_sig: float, n_bkg: float) -> float:
         b = float(n_bkg)
         if b <= 0.0:
             return float("nan")
-        # Cowan et al. 2010, Eur.Phys.J. C71 (2011) 1554, eq. 17
-        # Z = sqrt(2 * [(s+b) * ln(1 + s/b) - s])
-        # Assumes Asimov dataset (n_obs = s+b); valid when B >> ~10.
-        val = 2.0 * ((s + b) * math.log(1.0 + (s / b)) - s)
-        return math.sqrt(val) if val > 0.0 else 0.0
+        return max(0.0, float(ROOT.RooStats.AsimovSignificance(s, b, 0.0)))
+    except Exception:
+        return float("nan")
+
+
+# RooStats number-counting expected significance from S and B.
+def _number_counting_expected_significance(n_sig: float, n_bkg: float) -> float:
+    try:
+        s = max(0.0, float(n_sig))
+        b = max(0.0, float(n_bkg))
+        if b <= 0.0:
+            return float("nan")
+        rel_unc = _roostats_fractional_b_uncertainty(b)
+        z_value = float(ROOT.RooStats.NumberCountingUtils.BinomialExpZ(s, b, rel_unc))
+        if not math.isfinite(z_value):
+            return float("nan")
+        return max(0.0, z_value)
     except Exception:
         return float("nan")
 
@@ -636,23 +1433,37 @@ def _compute_significance_from_yields(S: float, B: float, method: str = "simple"
     b = float(B)
     if method == "asymptotic":
         return _asymptotic_significance(s, b)
-    # default: "simple"  — S / sqrt(B)
+    # default: RooStats number-counting expected significance
     if b <= 0.0:
         return float("nan")
-    return s / math.sqrt(b)
+    return _number_counting_expected_significance(s, b)
 
 
 # Return compact p0 / Z / CLs summary string: always expected (S+B Asimov), observed if n_obs given.
 def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None) -> str:
-    def _line(n: int) -> str:
-        p0   = _poisson_tail_ge(n, n_bkg)
-        clb  = _poisson_tail_le(n, n_bkg)
-        clspb = _poisson_tail_le(n, n_bkg + n_sig)
-        cls  = clspb / clb if clb > 0.0 else float("inf")
-        z    = _significance_from_pvalue(p0)
-        return f"N={n}  p0={p0:.4g}  Z={z:.4g}\u03c3  CLs={cls:.4g}"
+    n_bkg_val = max(0.0, float(n_bkg))
+    n_sig_val = max(0.0, float(n_sig))
+    rel_bkg_unc = _roostats_fractional_b_uncertainty(n_bkg_val)
 
-    n_exp = max(0, int(round(n_bkg + n_sig)))
+    def _line(n: int) -> str:
+        n_val = max(0, int(n))
+        p0 = _roostats_clip_probability(
+            float(
+                ROOT.RooStats.NumberCountingUtils.BinomialObsP(
+                    float(n_val), n_bkg_val, rel_bkg_unc
+                )
+            )
+        )
+        # Convert the p-value to a one-sided discovery Z using the
+        # canonical `_significance_from_pvalue` converter.
+        z = _significance_from_pvalue(p0)
+        cls, clspb, clb = _roostats_exclusion_summary(n_val, n_bkg_val, n_sig_val)
+        return (
+            f"N={n_val}  p0={p0:.4g}  Z={z:.4g}sigma  "
+            f"CLs={cls:.4g}  CLs+b={clspb:.4g}  CLb={clb:.4g}"
+        )
+
+    n_exp = max(0, int(round(n_bkg_val + n_sig_val)))
     result = f"Expected(S+B Asimov): {_line(n_exp)}"
     if n_obs is not None:
         result += f" | Observed: {_line(n_obs)}"

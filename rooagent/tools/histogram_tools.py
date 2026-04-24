@@ -1,7 +1,7 @@
 import array as _arr
 import ROOT
 from langchain_core.tools import tool
-from .utils import _load_histogram, _rebin_hist
+from .utils import _load_hist
 
 
 # ─── Public tools ─────────────────────────────────────────────────────────────
@@ -12,12 +12,9 @@ def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
 
     rebin: optional rebin factor applied before computing stats.
     """
-    h, err = _load_histogram(file_path, hist_name)
+    h, err = _load_hist(file_path, hist_name, rebin)
     if err:
         return err
-
-    # Optionally rebin before computing statistics
-    h = _rebin_hist(h, rebin)
 
     mean = h.GetMean()
     rms = h.GetRMS()
@@ -35,12 +32,9 @@ def histogram_integral(
     rebin: int = 1,
 ) -> str:
     """Integrate a TH1 between x_low and x_high, returning count ± stat error."""
-    h, err = _load_histogram(file_path, hist_name)
+    h, err = _load_hist(file_path, hist_name, rebin)
     if err:
         return err
-
-    # Optionally rebin before computing integrals
-    h = _rebin_hist(h, rebin)
 
     nb = h.GetNbinsX()
     ax = h.GetXaxis()

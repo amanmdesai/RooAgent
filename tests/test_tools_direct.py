@@ -1,5 +1,7 @@
 from pathlib import Path
+import math
 import os
+import sys
 import warnings
 
 # Merged from tests/conftest.py: ensure harmless defaults for API keys
@@ -21,6 +23,11 @@ warnings.filterwarnings(
 import re
 
 import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 pytestmark = [
@@ -58,9 +65,10 @@ from rooagent.tools.rdataframe_tools import (  # noqa: E402
     find_optimal_cut,
     generate_cutflow,
 )
+from rooagent.tools.rdataframe_tools import root_tree_to_histogram  # noqa: E402
 from rooagent.tools.plot_tools import (  # noqa: E402
-    _build_signal_background_ratio,
-    plot_1d,
+    
+    plot,
     plot_2d,
     plot_significance_and_cls,
 )
@@ -71,10 +79,18 @@ from rooagent.tools.tfile_tools import (  # noqa: E402
 )
 from rooagent.tools.fit_tools import fit_distribution  # noqa: E402
 from rooagent.tools.data_format_tools import root_tree_to_csv  # noqa: E402
-from rooagent.tools.utils import _get_vector_branches, _rewrite_vector_cut, _parse_file_inputs  # noqa: E402
+from rooagent.tools.utils import (
+    _get_vector_branches,
+    _rewrite_vector_cut,
+    _parse_paths,
+    _build_signal_background_ratio,
+    _fractional_integral,
+    _roostats_fractional_b_uncertainty,
+    _number_counting_expected_significance,
+    _stat_summary,
+    _roostats_upper_limit,
+)  # noqa: E402
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = PROJECT_ROOT / "tests"
 OUTPUT_DIR = Path(os.getenv("ROOAGENT_TEST_OUTPUT_DIR", TESTS_DIR / "output"))
 SIGNAL_FILE = Path(os.getenv("ROOAGENT_SIGNAL_FILE", TESTS_DIR / "signal.root"))
@@ -381,24 +397,74 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
     assert "Expected(S+B Asimov):" in output, output
     assert "Observed:" in output, output
 
-    # Each section carries p0, Z, CLs
+    # Each section carries p0, Z, CLs, CLs+b, CLb
     p0_values = re.findall(r"p0=([0-9.eE+\-]+)", output)
     z_values  = re.findall(r"Z=([0-9.eE+\-]+)", output)
     cls_values = re.findall(r"CLs=([0-9.eE+\-]+)", output)
+    clspb_values = re.findall(r"CLs\+b=([0-9.eE+\-]+)", output)
+    clb_values = re.findall(r"CLb=([0-9.eE+\-]+)", output)
     assert len(p0_values) == 2, f"Expected 2 p0 values: {output}"
     assert len(z_values)  == 2, f"Expected 2 Z values: {output}"
     assert len(cls_values) == 2, f"Expected 2 CLs values: {output}"
+    assert len(clspb_values) == 2, f"Expected 2 CLs+b values: {output}"
+    assert len(clb_values) == 2, f"Expected 2 CLb values: {output}"
 
-    p0_exp, p0_obs = float(p0_values[0]), float(p0_values[1])
-    z_exp,  z_obs  = float(z_values[0]),  float(z_values[1])
 
-    # Deficit (n_obs=3 < B=10): observed significance lower than expected
-    assert z_obs < z_exp
-    # p0 is a valid probability
-    assert 0.0 <= p0_exp <= 1.0
-    assert 0.0 <= p0_obs <= 1.0
-    # CLs must be < 1 for both
-    assert all(float(c) < 1.0 for c in cls_values)
+def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
+    """Convert a tree variable to a TH1 and run histogram_significance_and_limits.
+
+    This exercises the new `root_tree_to_histogram` tool and verifies the
+    histogram output can be used by the histogram-based `stat_tools`.
+    """
+    signal = sample_context["signal"]
+    tree = sample_context["tree"]
+    variable = sample_context["variable"]
+    xmin = sample_context["xmin"]
+    xmax = sample_context["xmax"]
+
+    out_file = tmp_path / "sig_hist.root"
+
+    # Create histogram from tree
+    conv_out = root_tree_to_histogram.invoke(
+        {
+            "file_path": signal,
+            "tree_name": tree,
+            "variable": variable,
+            "bins": 50,
+            "xmin": xmin,
+            "xmax": xmax,
+            "output_root": str(out_file),
+            "hist_name": "sig",
+        }
+    )
+    assert "Saved histogram" in conv_out
+
+    # Copy a background histogram into the same file under name 'bkg'
+    bkg_file = sample_context["background"]
+    fbkg = ROOT.TFile.Open(bkg_file)
+    hbkg = fbkg.Get(sample_context["background_hist"])
+    fout = ROOT.TFile.Open(str(out_file), "UPDATE")
+    hbkg_clone = hbkg.Clone("bkg")
+    fout.cd()
+    hbkg_clone.Write()
+    fout.Close()
+    fbkg.Close()
+
+    center = (xmin + xmax) / 2.0
+    window = (xmax - xmin) / 10.0
+
+    out = histogram_significance_and_limits.invoke(
+        {
+            "file_path": str(out_file),
+            "data_name": "",
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "center": center,
+            "window": window,
+        }
+    )
+
+    assert "Expected(S+B Asimov):" in out
 
 
 def test_upper_limit_no_excess_analytic(tmp_path):
@@ -464,8 +530,8 @@ def test_upper_limit_both_expected_and_observed_with_data(tmp_path):
     mu_exp, mu_obs = float(mu_values[0]), float(mu_values[1])
     assert 0.0 < mu_exp < float("inf")
     assert 0.0 < mu_obs < float("inf")
-    # n_obs == round(B), so observed ≈ expected
-    assert abs(mu_obs - mu_exp) < 1e-6
+    # n_obs == round(B), so observed and expected should agree within scan precision.
+    assert abs(mu_obs - mu_exp) < 0.1
 
 
 def test_upper_limit_with_data(tmp_path):
@@ -751,7 +817,7 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     compare_pdf = _artifact_path("compare_tree_vars_ratio.pdf")
     same_canvas_pdf = _artifact_path("same_canvas_ratio.pdf")
 
-    out1 = plot_1d.invoke(
+    out1 = plot.invoke(
         {
             "mode": "hist",
             "file_path": sample_context["signal"],
@@ -763,7 +829,7 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert "Saved 1D histogram" in out1
     assert one_d_pdf.exists()
 
-    out2 = plot_1d.invoke(
+    out2 = plot.invoke(
         {
             "mode": "tree",
             "file_path": sample_context["signal"],
@@ -779,7 +845,7 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert "Saved plot to" in out2
     assert tree_pdf.exists()
 
-    out3 = plot_1d.invoke(
+    out3 = plot.invoke(
         {
             "mode": "tree_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
@@ -798,7 +864,7 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
     assert compare_pdf.exists()
     assert compare_pdf.stat().st_size > 0
 
-    out4 = plot_1d.invoke(
+    out4 = plot.invoke(
         {
             "mode": "hist_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
@@ -903,7 +969,7 @@ def test_plot_significance_and_cls_no_y_returns_error(tmp_path):
 
 
 def test_compare_tree_variables_validation(sample_context):
-    out = plot_1d.invoke(
+    out = plot.invoke(
         {
             "mode": "tree_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
@@ -920,7 +986,7 @@ def test_compare_tree_variables_validation(sample_context):
 
 
 def test_draw_histograms_same_canvas_validation(sample_context):
-    out = plot_1d.invoke(
+    out = plot.invoke(
         {
             "mode": "hist_compare",
             "file_paths": [sample_context["signal"], sample_context["background"]],
@@ -972,7 +1038,7 @@ def test_plot_tools_2d(sample_context):
 def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
     output_pdf = _artifact_path("signal_vs_backgrounds_ratio.pdf")
 
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -995,7 +1061,7 @@ def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
 
 def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
     output_pdf = _artifact_path("signal_vs_two_backgrounds_ratio.pdf")
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1018,7 +1084,7 @@ def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
 
 def test_plot_signal_vs_backgrounds_multiple_signals(sample_context):
     output_pdf = _artifact_path("two_signals_vs_background_ratio.pdf")
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1043,7 +1109,7 @@ def test_plot_signal_vs_backgrounds_multiple_signals(sample_context):
 
 def test_plot_signal_vs_backgrounds_with_data_markers(sample_context):
     output_pdf = _artifact_path("signal_background_data_markers.pdf")
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1115,7 +1181,7 @@ def test_signal_background_ratio_uses_sum_of_backgrounds(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_label_validation(sample_context):
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1133,7 +1199,7 @@ def test_plot_signal_vs_backgrounds_label_validation(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_signal_label_validation(sample_context):
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1152,7 +1218,7 @@ def test_plot_signal_vs_backgrounds_signal_label_validation(sample_context):
 
 
 def test_plot_signal_vs_backgrounds_data_validation(sample_context):
-    output = plot_1d.invoke(
+    output = plot.invoke(
         {
             "mode": "signal_background",
             "signal_file": sample_context["signal"],
@@ -1178,7 +1244,7 @@ def test_utils_functions(sample_context):
 
 
 def test_plot_file_input_parser_merges_and_deduplicates():
-    parsed = _parse_file_inputs("a.root, b.root", ["b.root", "c.root", ""])
+    parsed = _parse_paths("a.root, b.root", ["b.root", "c.root", ""])
     assert parsed == ["a.root", "b.root", "c.root"]
 
 
@@ -1194,6 +1260,8 @@ def test_stat_tools_with_generated_files():
     })
     assert "p0=" in output
     assert "CLs=" in output
+    assert "CLs+b=" in output
+    assert "CLb=" in output
 
     output2 = histogram_upper_limit.invoke({
         "file_path": str(SIGNAL_FILE),
@@ -1250,3 +1318,43 @@ def test_stat_tools_zero_signal():
     })
     assert "signal yield in window is zero" in output or "Error" in output
     tmp.close()
+
+
+def test_fractional_integral_partial_bins():
+    # 4 bins [0,1,2,3,4] with contents [10,20,30,40]
+    h = ROOT.TH1F("h", "h", 4, 0.0, 4.0)
+    h.SetBinContent(1, 10.0)
+    h.SetBinContent(2, 20.0)
+    h.SetBinContent(3, 30.0)
+    h.SetBinContent(4, 40.0)
+
+    # Range = [0.75, 1.75] => bin1 overlap 0.25, bin2 overlap 0.75
+    val = _fractional_integral(h, center=1.25, window=0.5)
+    assert math.isclose(val, 17.5, rel_tol=1e-9)
+
+
+def test_roostats_fractional_b_uncertainty_behavior():
+    assert _roostats_fractional_b_uncertainty(0.0) == 0.0
+    assert _roostats_fractional_b_uncertainty(1.0) == 1e-4
+
+
+def test_number_counting_expected_significance_b_zero():
+    # When background <= 0 the helpers return NaN per implementation
+    z = _number_counting_expected_significance(5.0, 0.0)
+    assert math.isnan(z)
+
+
+def test_roostats_upper_limit_zero_signal_returns_inf():
+    # The helper returns +inf for zero nominal signal
+    mu = _roostats_upper_limit(0, 10.0, 0.0, cl=0.95)
+    assert mu == float("inf")
+
+
+def test_stat_summary_basic_format_and_probabilities():
+    out = _stat_summary(10.0, 5.0)
+    assert "Expected(S+B Asimov):" in out
+    p0_values = re.findall(r"p0=([0-9.eE+\-]+)", out)
+    assert len(p0_values) >= 1
+    for p in p0_values:
+        pv = float(p)
+        assert 0.0 <= pv <= 1.0

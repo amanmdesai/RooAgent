@@ -15,12 +15,8 @@ def inspect_root_data(
     tree_name: str = "",
 ) -> str:
     """Inspect ROOT files, TTrees, and branches.
-
-    mode: "files" (list .root files) | "summary" (trees per file) |
-          "contents" (all objects) | "trees" (TTree names) | "branches" (branch list).
-    directory: used by modes "files" and "summary".
-    file_path: used by modes "contents", "trees", "branches".
-    tree_name: required for mode "branches".
+    Modes: "files" (list .root), "summary" (trees per file), "contents" (all objects), "trees", "branches".
+    mode "branches" requires file_path and tree_name.
     """
     mode_key = (mode or "summary").strip().lower()
 

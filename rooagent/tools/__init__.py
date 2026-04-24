@@ -16,6 +16,28 @@ import ROOT
 # Run ROOT in batch mode by default for non-interactive environments
 ROOT.gROOT.SetBatch(True)
 
+# Suppress noisy ROOT, RooFit, and RooStats printouts globally.
+try:
+	ROOT.gErrorIgnoreLevel = ROOT.kError
+except Exception:
+	pass
+
+try:
+	ROOT.Math.MinimizerOptions.SetDefaultPrintLevel(-1)
+except Exception:
+	pass
+
+try:
+	ROOT.RooStats.AsymptoticCalculator.SetPrintLevel(0)
+except Exception:
+	pass
+
+try:
+	msg_service = ROOT.RooMsgService.instance()
+	msg_service.setGlobalKillBelow(ROOT.RooFit.ERROR)
+except Exception:
+	pass
+
 # Use a clean, publication-friendly default style. These settings are
 # chosen to produce white canvases, clear fonts, tick marks on all sides,
 # and a neutral color palette suitable for printed figures.

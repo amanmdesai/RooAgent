@@ -4,16 +4,49 @@ import os
 import math
 from langchain_core.tools import tool
 from .utils import (
-    _parse_background_inputs,
+    _parse_paths,
     _unique_canvas_name,
     _get_vector_branches,
     _rewrite_vector_cut,
     _build_dataframe,
+    _tree_variable_to_histogram,
     _has_column,
     _filtered_yield,
     _total_yield,
     _compute_significance_from_yields,
 )
+
+
+@tool
+def root_tree_to_histogram(
+    file_path: str,
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    cuts: Optional[List[str]] = None,
+    vector_mode: str = "all",
+    weight: Optional[str] = None,
+    output_root: Optional[str] = None,
+    hist_name: Optional[str] = None,
+) -> str:
+    """Convert a numeric tree variable into a 1D TH1 and save to a ROOT file.
+    Output defaults to `<input>_<variable>_hist.root` if not specified. Supports optional cuts and weights.
+    """
+    h = _tree_variable_to_histogram(file_path, tree_name, variable, bins, xmin, xmax, cuts, vector_mode, weight)
+
+    chosen_name = hist_name if hist_name else h.GetName()
+    if output_root is None:
+        output_root = str(file_path).replace(".root", f"_{variable}_hist.root")
+
+    f = ROOT.TFile.Open(output_root, "RECREATE")
+    hcopy = h.Clone(chosen_name)
+    hcopy.SetDirectory(f)
+    f.Write()
+    f.Close()
+
+    return f"Saved histogram '{chosen_name}' to {output_root}"
 
 
 @tool
@@ -28,7 +61,7 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
     file_paths: extra files merged with file_path.
     """
 
-    paths = _parse_background_inputs(file_path, file_paths)
+    paths = _parse_paths(file_path, file_paths)
     if not paths:
         return "Error: no file(s) provided."
 
@@ -51,17 +84,14 @@ def compute_significance(signal_file: str,
                          weight: Optional[str] = None,
                          background_files: Optional[List[str]] = None,
                          method: str = "simple") -> str:
-    """Compute expected discovery significance Z for a selection cut.
-
-    Sum all backgrounds via background_files before calling.
-    method: "simple" (S/sqrt(B), default) or "asymptotic" (Cowan 2010 eq.17, only when B>>10).
-    For observed significance use histogram_significance_and_limits (exact Poisson).
+    """Compute expected discovery significance Z for a tree variable after selection cut.
+    Supports "simple" (RooStats number-counting) or "asymptotic" (Asimov) methods. Sum all backgrounds first.
     """
 
     vector_vars = _get_vector_branches(signal_file, tree_name)
     cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
 
-    bkg_paths = _parse_background_inputs(background_file, background_files)
+    bkg_paths = _parse_paths(background_file, background_files)
     if not bkg_paths:
         return "Error: no background file(s) provided."
 
@@ -177,11 +207,11 @@ def find_optimal_cut(signal_file: str,
                      method: str = "simple") -> str:
     """Scan variable > cut_val and return the cut value that maximises significance.
 
-    method: "simple" (S/sqrt(B), default) or "asymptotic" (Cowan 2010, only when B>>10).
+    method: "simple" (RooStats number-counting, default) or "asymptotic" (Cowan 2010, only when B>>10).
     base_cut: extra selection AND-ed with each scanned cut.
     """
 
-    bkg_paths = _parse_background_inputs(background_file, background_files)
+    bkg_paths = _parse_paths(background_file, background_files)
     if not bkg_paths:
         return "Error: no background file(s) provided."
 
@@ -246,7 +276,7 @@ def generate_cutflow(
     weight: MC weight branch; absent -> raw counts.
     file_paths: additional files merged with file_path.
     """
-    paths = _parse_background_inputs(file_path, file_paths)
+    paths = _parse_paths(file_path, file_paths)
     if not paths:
         return "Error: no file(s) provided."
 
