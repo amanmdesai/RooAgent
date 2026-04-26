@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container:
-      image: rootproject/root:6.36.00-ubuntu24.04
+      image: rootproject/root:6.34.00-ubuntu24.04
     env:
       PIP_NO_CACHE_DIR: "1"
     steps:
