@@ -227,8 +227,8 @@ def plot_2d(
         tree_name (str, optional): TTree name when mode='tree'.
         variable_x (str, optional): X-axis branch name when mode='tree'.
         variable_y (str, optional): Y-axis branch name when mode='tree'.
-        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and bounds.
-        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and bounds.
+        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and limits.
+        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and limits.
         xlabel (str, optional), ylabel (str, optional), zlabel (str, optional): Axis labels.
         logz (bool, optional): Use logarithmic color scale.
         normalize (bool, optional): Normalize 2D histogram before plotting.

@@ -64,7 +64,7 @@ Execution:
 
 Notes:
 - Conventionally, discovery is claimed at Z ≥ 5 (p ≈ 3×10^-7).
-- Treat p-values as one-sided by default (upper-tail probability converted with inverse normal survival).
+- Treat p-values as one-sided by default.
 """
 
 
