@@ -44,15 +44,15 @@ def histogram_integral(
     Args:
         file_path (str): ROOT file path containing the histogram.
         hist_name (str): Name of the histogram to integrate.
-        x_low (float): Lower integration limit (inclusive).
-        x_high (float): Upper integration limit (exclusive).
+        x_low (float): Lower integration bound (inclusive).
+        x_high (float): Upper integration bound (exclusive).
         include_overflow (bool, optional): Whether to include underflow/overflow bins in the integral.
         rebin (int, optional): Rebin factor applied before integration.
 
     Returns:
         str: Textual result with the integrated value, the error estimate, and the effective bin range used; or an error message for invalid ranges.
     Notes:
-        Validate that `x_low < x_high` and that the requested interval overlaps the histogram axis; provide clear guidance when user limits lie outside the histogram axis.
+        Validate that `x_low < x_high` and that the requested interval overlaps the histogram axis; provide clear guidance when user bounds lie outside the histogram axis.
     """
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
@@ -84,7 +84,7 @@ def histogram_integral(
 
     # If x_high falls exactly on a bin's lower edge, exclude that bin so the
     # integral is half-open [x_low, x_high).  Use a relative-epsilon comparison
-    # to handle floating-point imprecision in user-supplied limits.
+    # to handle floating-point imprecision in user-supplied bounds.
     _eps = 1e-9 * (axis_hi - axis_lo)
     if abs(ax.GetBinLowEdge(bin_hi) - x_high) < _eps and bin_hi > 1:
         bin_hi -= 1

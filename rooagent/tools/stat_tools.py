@@ -10,7 +10,7 @@ from .utils import (
 
 
 @tool
-def histogram_significance_and_limits(
+def histogram_significance_and_cls(
     file_path: str,
     data_name: str = "",
     bkg_name: str = "bkg",
@@ -77,7 +77,7 @@ def summarize_parameter_scan(
     """Summarize a generic parameter scan from aligned arrays.
 
     Provide one scan parameter array and a dictionary of same-length result
-    arrays such as significance, cls, p-values, or limits. The tool validates
+    arrays such as significance, cls, p-values, or other metrics. The tool validates
     alignment once and produces a compact ranking automatically.
     """
     resolved_series = dict(series or {})

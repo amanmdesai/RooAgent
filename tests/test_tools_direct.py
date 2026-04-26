@@ -74,7 +74,7 @@ from rooagent.tools.plot_tools import (  # noqa: E402
 )
 from rooagent.tools.histogram_tools import get_histogram_stats, histogram_integral  # noqa: E402
 from rooagent.tools.stat_tools import (  # noqa: E402
-    histogram_significance_and_limits,
+    histogram_significance_and_cls,
     summarize_parameter_scan,
 )
 from rooagent.tools.tfile_tools import (  # noqa: E402
@@ -395,7 +395,7 @@ def test_histogram_integral_invalid_range_returns_error(sample_context):
     assert "Error" in output
 
 
-def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
+def test_histogram_significance_and_cls_uses_exclusion_tail(tmp_path):
     root_file = tmp_path / "cls_input.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
 
@@ -415,7 +415,7 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
     hdata.Write()
     f.Close()
 
-    output = histogram_significance_and_limits.invoke(
+    output = histogram_significance_and_cls.invoke(
         {
             "file_path": str(root_file),
             "data_name": "data",
@@ -447,7 +447,7 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
 
 
 def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
-    """Convert a tree variable to a TH1 and run histogram_significance_and_limits.
+    """Convert a tree variable to a TH1 and run histogram_significance_and_cls.
 
     This exercises the new `root_tree_to_histogram` tool and verifies the
     histogram output can be used by the histogram-based `stat_tools`.
@@ -489,7 +489,7 @@ def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
     center = (xmin + xmax) / 2.0
     window = (xmax - xmin) / 10.0
 
-    out = histogram_significance_and_limits.invoke(
+    out = histogram_significance_and_cls.invoke(
         {
             "file_path": str(out_file),
             "data_name": "",
@@ -1219,7 +1219,7 @@ def test_plot_file_input_parser_merges_and_deduplicates():
 def test_stat_tools_with_generated_files():
     """Test stat_tools on the minimal generated ROOT files."""
     # Use the 1D histogram 'h1' as both signal and background for simplicity
-    output = histogram_significance_and_limits.invoke({
+    output = histogram_significance_and_cls.invoke({
         "file_path": str(SIGNAL_FILE),
         "bkg_name": "h1",
         "sig_name": "h1",
@@ -1231,12 +1231,12 @@ def test_stat_tools_with_generated_files():
     assert "CLs+b=" in output
     assert "CLb=" in output
 
-    # histogram limit checks omitted.
+    # histogram bound checks omitted.
 
 
 def test_stat_tools_missing_histogram():
     """Test stat_tools error handling for missing histogram."""
-    output = histogram_significance_and_limits.invoke({
+    output = histogram_significance_and_cls.invoke({
         "file_path": str(SIGNAL_FILE),
         "bkg_name": "notfound",
         "sig_name": "h1",
@@ -1245,11 +1245,11 @@ def test_stat_tools_missing_histogram():
     })
     assert "missing histograms" in output or "Error" in output
 
-    # histogram limit checks omitted.
+    # histogram bound checks omitted.
 
 
 def test_stat_tools_zero_signal():
-    """Test stat_tools with zero signal histogram (should error for limit calculation)."""
+    """Test stat_tools with zero signal histogram (should error for exclusion calculation)."""
     # Create a temp file with zero signal
     import ROOT
     import tempfile
@@ -1379,7 +1379,7 @@ def test_summarize_parameter_scan_accepts_legacy_inputs_without_series():
     assert "Best point: parameter = 250, observed_significance = 2.4, expected_significance = 1.9" in output
 
 
-def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
+def test_histogram_significance_and_cls_auto_detects_full_range(tmp_path):
     """When center and window are None, auto-detect full histogram range."""
     root_file = tmp_path / "auto_detect.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
@@ -1402,7 +1402,7 @@ def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
     f.Close()
 
     # Call without center and window - should auto-detect
-    output = histogram_significance_and_limits.invoke(
+    output = histogram_significance_and_cls.invoke(
         {
             "file_path": str(root_file),
             "data_name": "data",

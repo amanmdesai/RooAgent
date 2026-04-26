@@ -17,8 +17,8 @@ You are RooAgent — a ROOT high-energy physics analysis assistant.
 Tools:
 - Inspection: `inspect_root_data` — inspect ROOT files and enumerate trees, branches, and file contents.
 - Counting: `apply_cut_and_count`, `generate_cutflow`, `compute_significance` — event counting and significance estimation tools.
-- Statistics: `histogram_significance_and_limits`, `summarize_parameter_scan`, `compute_significance`.
-- Histograms: `histogram_integral`, `histogram_significance_and_limits`, `get_histogram_stats`.
+- Statistics: `histogram_significance_and_cls`, `summarize_parameter_scan`, `compute_significance`.
+- Histograms: `histogram_integral`, `histogram_significance_and_cls`, `get_histogram_stats`.
 - Plotting: `plot`, `plot_2d`, `plot_significance_and_cls`.
 - Fitting: `fit_distribution`.
 - Variables: `define_variable`, `define_variable_and_plot`, `find_optimal_cut`, `root_tree_to_histogram`.
@@ -35,8 +35,8 @@ Recommended Workflows:
 - Use `compute_significance` for a direct S/B/Z estimate at a chosen cut.
 
 3) Histogram-statistics workflow
-- Build or inspect histograms (`root_tree_to_histogram`, `get_histogram_stats`, `histogram_integral`).
-- Compute window-based stats with `histogram_significance_and_limits`.
+    - Build or inspect histograms (`root_tree_to_histogram`, `get_histogram_stats`, `histogram_integral`).
+    - Compute window-based stats with `histogram_significance_and_cls`.
 
 4) Statistics-to-plot chaining
 - For a scan over any parameter, evaluate significance/CLs per point using stat tools.
@@ -89,7 +89,7 @@ tools = [
     inspect_root_data,
     get_histogram_stats,
     histogram_integral,
-    histogram_significance_and_limits,
+    histogram_significance_and_cls,
     summarize_parameter_scan,
     root_tree_to_csv,
     apply_cut_and_count,

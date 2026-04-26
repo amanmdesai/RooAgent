@@ -227,8 +227,8 @@ def plot_2d(
         tree_name (str, optional): TTree name when mode='tree'.
         variable_x (str, optional): X-axis branch name when mode='tree'.
         variable_y (str, optional): Y-axis branch name when mode='tree'.
-        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and limits.
-        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and limits.
+        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and bounds.
+        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and bounds.
         xlabel (str, optional), ylabel (str, optional), zlabel (str, optional): Axis labels.
         logz (bool, optional): Use logarithmic color scale.
         normalize (bool, optional): Normalize 2D histogram before plotting.
@@ -312,7 +312,7 @@ def plot_significance_and_cls(
     n_bkg: Optional[float] = None,
     n_obs: Optional[int] = None,
 ):
-    """Plot or summarize discovery significance and CLs/limits.
+    """Plot or summarize discovery significance and CLs.
 
     Modes:
         Array plotting mode: provide `parameter_values` and one of `significance`, `cls`, or a generic `y` array. If neither `output_png` nor `output_pdf` is provided, the plot is saved to `significance_cls.png`.
@@ -335,7 +335,7 @@ def plot_significance_and_cls(
         n_sig (float, optional), n_bkg (float, optional), n_obs (int, optional): Numeric-mode yields for a single-point summary.
 
     Returns:
-        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and (if available) CLs/limits.
+        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and CLs (if available).
     Notes:
         If `n_sig` and `n_bkg` are provided, the function returns a numeric summary without plotting. When plotting arrays, ensure scan and y arrays have matching lengths.
     """

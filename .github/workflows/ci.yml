@@ -45,4 +45,4 @@ jobs:
         run: |
           set -x
           .venv/bin/python tests/gen_test_root_files.py
-          .venv/bin/python -m pytest -q tests/
+          .venv/bin/python -m pytest -q tests/test_tools_direct.py

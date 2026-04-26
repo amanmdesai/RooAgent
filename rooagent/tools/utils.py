@@ -241,7 +241,7 @@ def _default_scan_sort(series_names: List[str]) -> str:
 def _scan_sort_descending(series_name: str) -> bool:
     # Return True when larger series values should be considered better.
     lowered = series_name.lower().replace("_", " ")
-    lower_better_tokens = ("cls", "p0", "p value", "p-value", "limit", "mu up", "yield up")
+    lower_better_tokens = ("cls", "p0", "p value", "p-value", "mu up", "yield up")
     return not any(token in lowered for token in lower_better_tokens)
 
 
@@ -1440,7 +1440,7 @@ def _exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
     """
     return _counting_cls_poisson_fallback(n_obs, n_bkg, n_sig)
 # ============================================================================
-# STATISTICAL CALCULATIONS: Significance, limits, and p-values
+# STATISTICAL CALCULATIONS: Significance and p-values
 # ============================================================================
 
 # Mass window counting: Integrate histogram over fractional bins in window
