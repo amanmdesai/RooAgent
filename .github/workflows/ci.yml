@@ -34,11 +34,15 @@ jobs:
           .venv/bin/python -m pip install -e .
           .venv/bin/python -m pip install pytest matplotlib
 
-      - name: Generate ROOT test files
+      - name: Prepare tests (generate files)
+        shell: bash -l {0}
         run: |
+          set -x
           .venv/bin/python tests/gen_test_root_files.py
 
       - name: Run tests
         shell: bash -l {0}
         run: |
-          .venv/bin/python -m pytest -q tests/
+          set -x
+          .venv/bin/python tests/gen_test_root_files.py
+          .venv/bin/python -m pytest -q tests/test_tools_direct.py

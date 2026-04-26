@@ -227,8 +227,8 @@ def plot_2d(
         tree_name (str, optional): TTree name when mode='tree'.
         variable_x (str, optional): X-axis branch name when mode='tree'.
         variable_y (str, optional): Y-axis branch name when mode='tree'.
-        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and limits.
-        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and limits.
+        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and bounds.
+        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and bounds.
         xlabel (str, optional), ylabel (str, optional), zlabel (str, optional): Axis labels.
         logz (bool, optional): Use logarithmic color scale.
         normalize (bool, optional): Normalize 2D histogram before plotting.
@@ -298,7 +298,6 @@ def plot_significance_and_cls(
     parameter_values: Optional[List[float]] = None,
     significance: Optional[List[Optional[float]]] = None,
     cls: Optional[List[Optional[float]]] = None,
-    upper_limits: Optional[List[Optional[float]]] = None,
     y: Optional[List[Optional[float]]] = None,
     expected: Optional[List[Optional[float]]] = None,
     y_label: str = "Y",
@@ -313,17 +312,17 @@ def plot_significance_and_cls(
     n_bkg: Optional[float] = None,
     n_obs: Optional[int] = None,
 ):
-    """Plot or summarize discovery significance and CLs/limits.
+    """Plot or summarize discovery significance and CLs.
 
     Modes:
-        Array plotting mode: provide `parameter_values` and one of `significance`, `cls`, `upper_limits`, or a generic `y` array. If neither `output_png` nor `output_pdf` is provided, the plot is saved to `significance_cls.png`.
+        Array plotting mode: provide `parameter_values` and one of `significance`, `cls`, or a generic `y` array. If neither `output_png` nor `output_pdf` is provided, the plot is saved to `significance_cls.png`.
         Numeric summary mode: provide `n_sig` (expected signal yield) and `n_bkg` (expected background yield). `n_obs` is optional and will produce observed quantities when given.
 
     Args:
         parameter_values (List[float], optional): Scan parameter points.
         significance (List[float], optional): Significance values corresponding to the scan parameter.
         cls (List[float], optional): CLs values corresponding to the scan parameter.
-        upper_limits (List[float], optional): Upper-limit values corresponding to the scan parameter.
+        
         y (List[float], optional): Generic y-values corresponding to the scan parameter.
         expected (List[float], optional): Backward-compatible input accepted but intentionally ignored (single-series plot only).
         y_label (str, optional): Axis label for plots.
@@ -336,7 +335,7 @@ def plot_significance_and_cls(
         n_sig (float, optional), n_bkg (float, optional), n_obs (int, optional): Numeric-mode yields for a single-point summary.
 
     Returns:
-        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and (if available) CLs/limits.
+        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and CLs (if available).
     Notes:
         If `n_sig` and `n_bkg` are provided, the function returns a numeric summary without plotting. When plotting arrays, ensure scan and y arrays have matching lengths.
     """
@@ -348,13 +347,12 @@ def plot_significance_and_cls(
     provided_series = [
         ("significance", significance),
         ("cls", cls),
-        ("upper_limits", upper_limits),
         ("y", y),
     ]
     provided_series = [(name, values) for name, values in provided_series if values is not None]
 
     if len(provided_series) > 1:
-        return "Error: provide exactly one of significance, cls, upper_limits, or y when plotting arrays."
+        return "Error: provide exactly one of significance, cls, or y when plotting arrays."
 
     series_name = ""
     y_data = None
@@ -362,7 +360,7 @@ def plot_significance_and_cls(
         series_name, y_data = provided_series[0]
 
     if y_data is None:
-        return "Error: no y-data provided (significance/cls/upper_limits/y)."
+        return "Error: no y-data provided (significance/cls/y)."
 
     if not output_png and not output_pdf:
         output_png = "significance_cls.png"

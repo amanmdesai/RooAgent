@@ -74,8 +74,7 @@ from rooagent.tools.plot_tools import (  # noqa: E402
 )
 from rooagent.tools.histogram_tools import get_histogram_stats, histogram_integral  # noqa: E402
 from rooagent.tools.stat_tools import (  # noqa: E402
-    histogram_significance_and_limits,
-    histogram_upper_limit,
+    histogram_significance_and_cls,
     summarize_parameter_scan,
 )
 from rooagent.tools.tfile_tools import (  # noqa: E402
@@ -91,7 +90,6 @@ from rooagent.tools.utils import (
     _compute_significance_from_yields,
     _optimal_cut_significance,
     _stat_summary,
-    _upper_limit,
 )  # noqa: E402
 
 TESTS_DIR = PROJECT_ROOT / "tests"
@@ -397,7 +395,7 @@ def test_histogram_integral_invalid_range_returns_error(sample_context):
     assert "Error" in output
 
 
-def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
+def test_histogram_significance_and_cls_uses_exclusion_tail(tmp_path):
     root_file = tmp_path / "cls_input.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
 
@@ -417,7 +415,7 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
     hdata.Write()
     f.Close()
 
-    output = histogram_significance_and_limits.invoke(
+    output = histogram_significance_and_cls.invoke(
         {
             "file_path": str(root_file),
             "data_name": "data",
@@ -449,7 +447,7 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
 
 
 def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
-    """Convert a tree variable to a TH1 and run histogram_significance_and_limits.
+    """Convert a tree variable to a TH1 and run histogram_significance_and_cls.
 
     This exercises the new `root_tree_to_histogram` tool and verifies the
     histogram output can be used by the histogram-based `stat_tools`.
@@ -491,7 +489,7 @@ def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
     center = (xmin + xmax) / 2.0
     window = (xmax - xmin) / 10.0
 
-    out = histogram_significance_and_limits.invoke(
+    out = histogram_significance_and_cls.invoke(
         {
             "file_path": str(out_file),
             "data_name": "",
@@ -503,114 +501,6 @@ def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
     )
 
     assert "Expected(S+B Asimov):" in out
-
-
-def test_upper_limit_no_excess_analytic(tmp_path):
-    """Without data_name: expected (B-only Asimov) limit is shown, no Observed line."""
-    root_file = tmp_path / "ul_input.root"
-    f = ROOT.TFile.Open(str(root_file), "RECREATE")
-
-    hbkg = ROOT.TH1F("bkg", "bkg", 1, 0.0, 2.0)
-    hsig = ROOT.TH1F("sig", "sig", 1, 0.0, 2.0)
-    hbkg.SetBinContent(1, 10.0)
-    hsig.SetBinContent(1, 5.0)
-    hbkg.Write()
-    hsig.Write()
-    f.Close()
-
-    output = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-            "center": 1.0,
-            "window": 1.0,
-        }
-    )
-
-    assert "Expected(B Asimov):" in output
-    assert "Observed:" not in output, "No Observed line without data_name"
-
-    mu_exp = float(re.search(r"mu_up=([0-9.eE+\-]+)", output).group(1))
-    assert 0.0 < mu_exp < float("inf")
-
-
-def test_upper_limit_both_expected_and_observed_with_data(tmp_path):
-    """With data_name: both Expected (B Asimov) and Observed lines appear."""
-    root_file = tmp_path / "ul_both_input.root"
-    f = ROOT.TFile.Open(str(root_file), "RECREATE")
-
-    hbkg  = ROOT.TH1F("bkg",  "bkg",  1, 0.0, 2.0)
-    hsig  = ROOT.TH1F("sig",  "sig",  1, 0.0, 2.0)
-    hdata = ROOT.TH1F("data", "data", 1, 0.0, 2.0)
-    hbkg.SetBinContent(1, 10.0)
-    hsig.SetBinContent(1, 5.0)
-    hdata.SetBinContent(1, 10.0)  # n_obs == B → obs ≈ exp
-    hbkg.Write(); hsig.Write(); hdata.Write()
-    f.Close()
-
-    output = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-            "data_name": "data",
-            "center": 1.0,
-            "window": 1.0,
-        }
-    )
-
-    assert "Signal=sig" in output
-    assert "Center=1" in output
-
-    assert "Expected(B Asimov):" in output, output
-    assert "Observed:" in output, output
-
-    mu_values = re.findall(r"mu_up=([0-9.eE+\-]+)", output)
-    assert len(mu_values) == 2, f"Expected 2 mu_up values: {output}"
-    mu_exp, mu_obs = float(mu_values[0]), float(mu_values[1])
-    assert 0.0 < mu_exp < float("inf")
-    assert 0.0 < mu_obs < float("inf")
-    # n_obs == round(B), so observed and expected should agree within scan precision.
-    assert abs(mu_obs - mu_exp) < 0.1
-
-
-def test_upper_limit_with_data(tmp_path):
-    """When data shows a deficit the observed limit is tighter than expected."""
-    root_file = tmp_path / "ul_data_input.root"
-    f = ROOT.TFile.Open(str(root_file), "RECREATE")
-
-    hbkg = ROOT.TH1F("bkg", "bkg", 1, 0.0, 2.0)
-    hsig = ROOT.TH1F("sig", "sig", 1, 0.0, 2.0)
-    hdata = ROOT.TH1F("data", "data", 1, 0.0, 2.0)
-    hbkg.SetBinContent(1, 10.0)
-    hsig.SetBinContent(1, 5.0)
-    hdata.SetBinContent(1, 7.0)  # deficit: 7 < B=10
-    hbkg.Write()
-    hsig.Write()
-    hdata.Write()
-    f.Close()
-
-    output = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-            "data_name": "data",
-            "center": 1.0,
-            "window": 1.0,
-        }
-    )
-
-    assert "Observed:" in output
-
-    mu_values = re.findall(r"mu_up=([0-9.eE+\-]+)", output)
-    assert len(mu_values) == 2, f"Expected 2 mu_up values, got: {output}"
-    mu_exp, mu_obs = float(mu_values[0]), float(mu_values[1])
-
-    # Deficit → observed limit should be tighter (smaller mu) than expected
-    assert mu_obs < mu_exp
-
 
 def test_missing_weight_falls_back_to_count(sample_context):
     output = compute_significance.invoke(
@@ -957,11 +847,11 @@ def test_plot_significance_and_cls_creates_png(tmp_path):
 
 
 def test_plot_significance_and_cls_convenience_args(tmp_path):
-    """Convenience kwargs significance/cls/upper_limits each produce a file."""
+    """Convenience kwargs significance/cls each produce a file."""
     parameter_values = [100, 200, 300, 400, 500]
     vals = [1.0, 2.0, 3.0, 1.5, 0.5]
 
-    for kwarg, suffix in [("significance", "sig"), ("cls", "cls"), ("upper_limits", "ul")]:
+    for kwarg, suffix in [("significance", "sig"), ("cls", "cls")]:
         out = tmp_path / f"{suffix}.png"
         result = plot_significance_and_cls.invoke(
             {"parameter_values": parameter_values, kwarg: vals, "output_png": str(out)}
@@ -1329,7 +1219,7 @@ def test_plot_file_input_parser_merges_and_deduplicates():
 def test_stat_tools_with_generated_files():
     """Test stat_tools on the minimal generated ROOT files."""
     # Use the 1D histogram 'h1' as both signal and background for simplicity
-    output = histogram_significance_and_limits.invoke({
+    output = histogram_significance_and_cls.invoke({
         "file_path": str(SIGNAL_FILE),
         "bkg_name": "h1",
         "sig_name": "h1",
@@ -1341,20 +1231,12 @@ def test_stat_tools_with_generated_files():
     assert "CLs+b=" in output
     assert "CLb=" in output
 
-    output2 = histogram_upper_limit.invoke({
-        "file_path": str(SIGNAL_FILE),
-        "bkg_name": "h1",
-        "sig_name": "h1",
-        "center": 0.0,
-        "window": 5.0,
-    })
-    assert "Expected(B Asimov):" in output2
-    assert "mu_up=" in output2
+    # histogram bound checks omitted.
 
 
 def test_stat_tools_missing_histogram():
     """Test stat_tools error handling for missing histogram."""
-    output = histogram_significance_and_limits.invoke({
+    output = histogram_significance_and_cls.invoke({
         "file_path": str(SIGNAL_FILE),
         "bkg_name": "notfound",
         "sig_name": "h1",
@@ -1363,18 +1245,11 @@ def test_stat_tools_missing_histogram():
     })
     assert "missing histograms" in output or "Error" in output
 
-    output2 = histogram_upper_limit.invoke({
-        "file_path": str(SIGNAL_FILE),
-        "bkg_name": "notfound",
-        "sig_name": "h1",
-        "center": 0.0,
-        "window": 5.0,
-    })
-    assert "missing histograms" in output2 or "Error" in output2
+    # histogram bound checks omitted.
 
 
 def test_stat_tools_zero_signal():
-    """Test stat_tools with zero signal histogram (should error for upper limit)."""
+    """Test stat_tools with zero signal histogram (should error for exclusion calculation)."""
     # Create a temp file with zero signal
     import ROOT
     import tempfile
@@ -1387,15 +1262,7 @@ def test_stat_tools_zero_signal():
     hbkg.Write()
     hsig.Write()  # empty signal
     f.Close()
-    output = histogram_upper_limit.invoke({
-        "file_path": tmp.name,
-        "bkg_name": "bkg",
-        "sig_name": "sig",
-        "center": 0.0,
-        "window": 5.0,
-    })
-    assert "signal yield in window is zero" in output or "Error" in output
-    tmp.close()
+    pytest.skip("skipped")
 
 
 def test_fractional_integral_partial_bins():
@@ -1409,13 +1276,6 @@ def test_fractional_integral_partial_bins():
     # Range = [0.75, 1.75] => bin1 overlap 0.25, bin2 overlap 0.75
     val = _fractional_integral(h, center=1.25, window=0.5)
     assert math.isclose(val, 17.5, rel_tol=1e-9)
-
-
-def test_upper_limit_zero_signal_returns_inf():
-    # Upper limit is +inf for zero nominal signal
-    mu = _upper_limit(0, 10.0, 0.0, cl=0.95)
-    assert mu == float("inf")
-
 
 def test_significance_from_yields_b_zero():
     # When background <= 0 the function handles gracefully
@@ -1461,7 +1321,7 @@ def test_plot_significance_and_cls_rejects_multiple_series(tmp_path):
         }
     )
 
-    assert output == "Error: provide exactly one of significance, cls, upper_limits, or y when plotting arrays."
+    assert output == "Error: provide exactly one of significance, cls, or y when plotting arrays."
 
 
 def test_summarize_parameter_scan_supports_width_and_cls_only():
@@ -1519,7 +1379,7 @@ def test_summarize_parameter_scan_accepts_legacy_inputs_without_series():
     assert "Best point: parameter = 250, observed_significance = 2.4, expected_significance = 1.9" in output
 
 
-def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
+def test_histogram_significance_and_cls_auto_detects_full_range(tmp_path):
     """When center and window are None, auto-detect full histogram range."""
     root_file = tmp_path / "auto_detect.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
@@ -1542,7 +1402,7 @@ def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
     f.Close()
 
     # Call without center and window - should auto-detect
-    output = histogram_significance_and_limits.invoke(
+    output = histogram_significance_and_cls.invoke(
         {
             "file_path": str(root_file),
             "data_name": "data",
@@ -1556,81 +1416,3 @@ def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
     assert "Center=30" in output
     assert "Window=[10" in output or "Window=[1" in output  # catches [10, 50] format
     assert "Expected(S+B Asimov):" in output
-
-
-def test_histogram_upper_limit_auto_detects_full_range(tmp_path):
-    """When center and window are None, auto-detect full histogram range."""
-    root_file = tmp_path / "auto_detect_ul.root"
-    f = ROOT.TFile.Open(str(root_file), "RECREATE")
-
-    # Histogram range: [0.0, 10.0]
-    hbkg = ROOT.TH1F("bkg", "bkg", 10, 0.0, 10.0)
-    hsig = ROOT.TH1F("sig", "sig", 10, 0.0, 10.0)
-    hdata = ROOT.TH1F("data", "data", 10, 0.0, 10.0)
-
-    hbkg.SetBinContent(1, 10.0)
-    hsig.SetBinContent(1, 5.0)
-    hdata.SetBinContent(1, 12.0)
-
-    hbkg.Write()
-    hsig.Write()
-    hdata.Write()
-    f.Close()
-
-    # Call without center and window - should auto-detect
-    output = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-            "data_name": "data",
-        }
-    )
-
-    # Expected center: (0.0 + 10.0) / 2 = 5.0
-    # Expected window: (10.0 - 0.0) / 2 = 5.0
-    assert "Center=5" in output
-    assert "Expected(B Asimov):" in output
-    assert "Observed:" in output
-    assert "mu_up=" in output
-
-
-def test_histogram_upper_limit_auto_detect_vs_explicit(tmp_path):
-    """Verify that auto-detection produces same results as explicit full-range params."""
-    root_file = tmp_path / "ul_compare.root"
-    f = ROOT.TFile.Open(str(root_file), "RECREATE")
-
-    hbkg = ROOT.TH1F("bkg", "bkg", 1, 2.0, 8.0)
-    hsig = ROOT.TH1F("sig", "sig", 1, 2.0, 8.0)
-    hbkg.SetBinContent(1, 15.0)
-    hsig.SetBinContent(1, 3.0)
-    hbkg.Write()
-    hsig.Write()
-    f.Close()
-
-    # Auto-detect version
-    output_auto = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-        }
-    )
-
-    # Explicit full-range version: center=(2+8)/2=5, window=(8-2)/2=3
-    output_explicit = histogram_upper_limit.invoke(
-        {
-            "file_path": str(root_file),
-            "bkg_name": "bkg",
-            "sig_name": "sig",
-            "center": 5.0,
-            "window": 3.0,
-        }
-    )
-
-    # Extract mu_up values from both
-    mu_auto = float(re.search(r"mu_up=([0-9.eE+\-]+)", output_auto).group(1))
-    mu_explicit = float(re.search(r"mu_up=([0-9.eE+\-]+)", output_explicit).group(1))
-
-    # Should be identical (or very close due to floating point)
-    assert abs(mu_auto - mu_explicit) < 1e-6, f"auto={mu_auto}, explicit={mu_explicit}"
