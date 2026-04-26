@@ -31,14 +31,11 @@ jobs:
 
       - name: Install package and test dependencies
         run: |
-          .venv/bin/python -m pip install -e .
-          .venv/bin/python -m pip install pytest matplotlib
-
-      - name: Generate ROOT test files
-        run: |
-          .venv/bin/python tests/gen_test_root_files.py
+          python3 -m pip install -e .
+          python3 -m pip install pytest matplotlib
 
       - name: Run tests
         shell: bash -l {0}
         run: |
-          .venv/bin/python -m pytest -q tests/
+          python3 tests/gen_test_root_files.py
+          python3 -m pytest -q tests/
