@@ -136,3 +136,4 @@ notebooks/*png
 *.pdf
 *.csv
 docs/
+*tex

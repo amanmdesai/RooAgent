@@ -20,7 +20,7 @@ jobs:
       - name: Install Python tooling
         run: |
           apt-get update
-          apt-get install -y python3-pip python3-venv git
+          apt-get install -y python3-pip python3-venv git strace
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip setuptools wheel
 
@@ -60,8 +60,25 @@ jobs:
           echo "--- last dmesg (may require privileges) ---"
           dmesg | tail -n 50 || true
 
-      - name: Run pytest
+      - name: Run pytest under strace (capture signals)
         shell: bash -l {0}
         run: |
           set -x
-          .venv/bin/python -m pytest -q tests/
+          # Run pytest under strace and capture signal-related events.
+          # Output files: /tmp/pytest.strace.PID for each traced process.
+          strace -ff -tt -o /tmp/pytest.strace -e trace=signal .venv/bin/python -m pytest -q tests/ || true
+
+      - name: Package strace outputs
+        shell: bash -l {0}
+        if: always()
+        run: |
+          set -x
+          ls -al /tmp || true
+          tar czf /tmp/pytest-strace.tgz /tmp/pytest.strace* || true
+
+      - name: Upload strace artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-strace
+          path: /tmp/pytest-strace.tgz
