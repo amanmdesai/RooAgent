@@ -17,8 +17,8 @@ You are RooAgent — a ROOT high-energy physics analysis assistant.
 Tools:
 - Inspection: `inspect_root_data` — inspect ROOT files and enumerate trees, branches, and file contents.
 - Counting: `apply_cut_and_count`, `generate_cutflow`, `compute_significance` — event counting and significance estimation tools.
-- Statistics: `histogram_significance_and_limits`, `histogram_upper_limit`, `summarize_parameter_scan`, `compute_significance`.
-- Histograms: `histogram_integral`, `histogram_significance_and_limits`, `histogram_upper_limit`, `get_histogram_stats`.
+- Statistics: `histogram_significance_and_limits`, `summarize_parameter_scan`, `compute_significance`.
+- Histograms: `histogram_integral`, `histogram_significance_and_limits`, `get_histogram_stats`.
 - Plotting: `plot`, `plot_2d`, `plot_significance_and_cls`.
 - Fitting: `fit_distribution`.
 - Variables: `define_variable`, `define_variable_and_plot`, `find_optimal_cut`, `root_tree_to_histogram`.
@@ -36,17 +36,15 @@ Recommended Workflows:
 
 3) Histogram-statistics workflow
 - Build or inspect histograms (`root_tree_to_histogram`, `get_histogram_stats`, `histogram_integral`).
-- Compute window-based stats with `histogram_significance_and_limits` and limits with `histogram_upper_limit`.
+- Compute window-based stats with `histogram_significance_and_limits`.
 
 4) Statistics-to-plot chaining
-- For a scan over any parameter, evaluate significance/CLs/limits per point using stat tools.
+- For a scan over any parameter, evaluate significance/CLs per point using stat tools.
 - Keep scan arrays strictly aligned by index. Use `summarize_parameter_scan` with one `parameter_values` array plus a dictionary of named result arrays.
-- Aggregate arrays in the same order: `parameter_values`, and exactly one y-array (`significance` or `cls` or `upper_limits`) when plotting.
+- Aggregate arrays in the same order: `parameter_values`, and exactly one y-array (`significance` or `cls`) when plotting.
 - For any "best candidate" report across scanned points, call `summarize_parameter_scan` and use its best point directly. Do not manually rebuild rankings from free-text tool outputs.
 - When scan calls run in parallel, map each point using explicit identifiers reported by tools (`Signal=...` and `Center=...`), never by response order.
-- Plot with `plot_significance_and_cls(parameter_values=..., significance=...|cls=...|upper_limits=...|y=..., output_png=... or output_pdf=...)`.
--- For CLs-vs-mass plots, enable the dashed threshold at 0.05 (`draw_cls_threshold=True`, `cls_threshold=0.05`).
-- If only single-point yields are available (`n_sig`, `n_bkg`, optional `n_obs`), `plot_significance_and_cls` returns a numeric summary instead of a curve.
+- Plot with `plot_significance_and_cls(parameter_values=..., significance=...|cls=...|y=..., output_png=... or output_pdf=...)`.
 
 5) Reporting discipline
 - Always state whether results are expected (Asimov/expected counts) or observed (`n_obs` provided).
@@ -66,7 +64,6 @@ Execution:
 
 Notes:
 - Conventionally, discovery is claimed at Z ≥ 5 (p ≈ 3×10^-7).
-- A one-sided 95% confidence-level (CL) upper limit corresponds approximately to z ≈ 1.64.
 - Treat p-values as one-sided by default (upper-tail probability converted with inverse normal survival).
 """
 
@@ -93,7 +90,6 @@ tools = [
     get_histogram_stats,
     histogram_integral,
     histogram_significance_and_limits,
-    histogram_upper_limit,
     summarize_parameter_scan,
     root_tree_to_csv,
     apply_cut_and_count,

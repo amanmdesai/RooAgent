@@ -5,7 +5,6 @@ import re
 import math
 import ROOT
 from scipy.stats import norm, poisson
-from scipy.special import gammainccinv
 
 
 
@@ -1423,10 +1422,11 @@ def _poisson_cdf_leq(n: int, mu: float) -> float:
 
 
 def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
-    # Use left-tail (<= n_obs) Poisson CDF for counting CLs.
-    # Returns (CLs, CLs+b, CLb)
-    clb = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg)))
-    clspb = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
+    # Use right-tail (>= n_obs) Poisson survival function for counting CLs.
+    # This matches the standard CLs convention where larger counts are
+    # considered more signal-like. Returns (CLs, CLs+b, CLb).
+    clb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg)))
+    clspb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
 
     cls = float("inf") if clb <= 0.0 else (clspb / clb)
     return _clip_probability(cls), _clip_probability(clspb), _clip_probability(clb)
@@ -1434,30 +1434,11 @@ def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
 
 def _exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
     """Pure-Python CLs summary for counting experiments.
-
-    Returns (CLs, CLs+b, CLb) computed from Poisson CDFs using the left-tail
-    convention (<= n_obs).
+    Returns (CLs, CLs+b, CLb) computed from Poisson survival functions using
+    the right-tail convention (>= n_obs), consistent with common HEP
+    CLs definitions.
     """
     return _counting_cls_poisson_fallback(n_obs, n_bkg, n_sig)
-
-
-# Upper limit: Compute mu_up at CL using CLs criterion (exclusion boundary)
-def _upper_limit(
-    n_obs: int,
-    n_bkg: float,
-    n_sig_nominal: float,
-    cl: float = 0.95,
-) -> float:
-    """Upper limit on signal-strength `mu` using pure-Python counting CLs.
-
-    Uses a bisection over the counting CLs definition implemented in
-    `_upper_limit_poisson_fallback`.
-    """
-    if n_sig_nominal <= 0.0:
-        return float("inf")
-    return _upper_limit_poisson_fallback(n_obs, n_bkg, n_sig_nominal, cl=cl)
-
-
 # ============================================================================
 # STATISTICAL CALCULATIONS: Significance, limits, and p-values
 # ============================================================================
@@ -1526,33 +1507,7 @@ def _optimal_cut_significance(S: float, B: float) -> float:
     return s / math.sqrt(denom)
 
 
-# Upper-limit: find mu such that CLs(mu) = alpha via direct gamma-quantile inversion
-def _upper_limit_poisson_fallback(n_obs: int, n_bkg: float, n_sig_nominal: float, cl: float = 0.95) -> float:
-
-    if n_sig_nominal <= 0.0:
-        return float("inf")
-
-    alpha = 1.0 - float(cl)
-    n = max(0, int(n_obs))
-
-    # CLb = P(N <= n | bkg-only) — constant denominator for CLs
-    clb = float(poisson.cdf(n, max(0.0, float(n_bkg))))
-    if clb <= 0.0:
-        return float("inf")
-
-    # CLs(mu) = alpha  <=>  poisson.cdf(n, mu*n_sig + n_bkg) = alpha * CLb
-    # poisson.cdf(n, λ) = gammaincc(n+1, λ), so invert directly:
-    #   λ_up = gammainccinv(n+1, target)
-    target = alpha * clb
-    if not (0.0 < target < 1.0):
-        return float("inf")
-
-    lambda_up = float(gammainccinv(float(n + 1), target))
-    mu_up = (lambda_up - float(n_bkg)) / float(n_sig_nominal)
-    return max(0.0, mu_up)
-
-
-# Compute a full set of counting-statistics metrics (p0/Z, CLs, mu_up)
+# Compute a full set of counting-statistics metrics (p0/Z, CLs)
 def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl: float = 0.95):
     n_b = max(0.0, float(n_bkg))
     n_s = max(0.0, float(n_sig))
@@ -1575,15 +1530,6 @@ def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl
     n_for_exclusion = n_obs_for_observed
     cls, clspb, clb = _exclusion_summary(n_for_exclusion, n_b, n_s)
 
-    # Upper limit on mu
-    mu_up = float("inf")
-    try:
-        mu_up = _upper_limit(n_for_exclusion, n_b, n_s, cl=cl)
-        if not (math.isfinite(mu_up) and mu_up < float("inf")):
-            mu_up = _upper_limit_poisson_fallback(n_for_exclusion, n_b, n_s, cl=cl)
-    except Exception:
-        mu_up = _upper_limit_poisson_fallback(n_for_exclusion, n_b, n_s, cl=cl)
-
     return {
         "p0_obs": p0_obs,
         "z_obs": z_obs,
@@ -1592,7 +1538,6 @@ def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl
         "CLs": cls,
         "CLs+b": clspb,
         "CLb": clb,
-        "mu_up": mu_up,
     }
 
 

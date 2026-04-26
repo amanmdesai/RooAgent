@@ -5,7 +5,6 @@ from .utils import (
     _counting_window_inputs,
     _format_scan_summary,
     _normalize_parallel_arrays,
-    _upper_limit,
     _stat_summary,
 )
 
@@ -59,74 +58,11 @@ def histogram_significance_and_limits(
 
 
 @tool
-def histogram_upper_limit(
-    file_path: str,
-    bkg_name: str = "bkg",
-    sig_name: str = "sig",
-    data_name: str = "",
-    center: float = None,
-    window: float = None,
-    cl: float = 0.95,
-) -> str:
-    """Compute a CLs upper limit on the signal strength (mu) from histogram counts.
-
-    Args:
-        file_path (str): ROOT file with signal, background, and optionally observed-data histograms.
-        bkg_name (str, optional): Background histogram name (default 'bkg').
-        sig_name (str, optional): Signal histogram name used to scale signal strength (default 'sig').
-        data_name (str, optional): Observed-data histogram name.
-        center (float, optional): Center of the counting window. If None, uses histogram center.
-        window (float, optional): Half-width of the counting window. If None, uses full histogram range.
-        cl (float, optional): Confidence level to use (default 0.95 for 95% CL).
-
-    Returns:
-        str: Expected and observed mu_up and corresponding yield_up; or an explanatory error if the signal yield is zero.
-    Notes:
-        If center/window are not provided, automatically uses the full available range of the histogram.
-    """
-    inputs, err = _counting_window_inputs(
-        file_path=file_path,
-        bkg_name=bkg_name,
-        sig_name=sig_name,
-        data_name=data_name,
-        center=center,
-        window=window,
-    )
-    if err:
-        return err
-
-    n_bkg = inputs["n_bkg"]
-    n_sig = inputs["n_sig"]
-    n_obs = inputs["n_obs"]
-    used_center = inputs["center"]
-    used_window = inputs["window"]
-    
-    if n_sig <= 0.0:
-        return "Error: signal yield in window is zero; cannot compute upper limit."
-
-    n_exp = max(0, int(round(n_bkg)))  # B-only Asimov
-    mu_exp = _upper_limit(n_exp, n_bkg, n_sig, cl=cl)
-
-    lines = [
-        (
-            f"Signal={sig_name}  Center={used_center:.4g}  Window=[{used_center - used_window:.4g}, {used_center + used_window:.4g}]"
-            f"  CL={cl:.0%}  N_bkg={n_bkg:.4g}  N_sig={n_sig:.4g}"
-        ),
-        f"Expected(B Asimov): N={n_exp}  mu_up={mu_exp:.4g}  yield_up={mu_exp * n_sig:.4g}",
-    ]
-    if n_obs is not None:
-        mu_obs = _upper_limit(n_obs, n_bkg, n_sig, cl=cl)
-        lines.append(f"Observed: N={n_obs}  mu_up={mu_obs:.4g}  yield_up={mu_obs * n_sig:.4g}")
-    return " | ".join(lines)
-
-
-@tool
 def summarize_parameter_scan(
     parameter_values: List[float],
     series: Dict[str, List[float]] = {},
     significance: Optional[List[float]] = None,
     cls: Optional[List[float]] = None,
-    upper_limits: Optional[List[float]] = None,
     pvalue: Optional[List[float]] = None,
     observed_significance: Optional[List[float]] = None,
     expected_significance: Optional[List[float]] = None,
@@ -149,7 +85,7 @@ def summarize_parameter_scan(
     legacy_series = {
         "significance": significance,
         "cls": cls,
-        "upper_limits": upper_limits,
+        
         "pvalue": pvalue,
         "observed_significance": observed_significance,
         "expected_significance": expected_significance,
