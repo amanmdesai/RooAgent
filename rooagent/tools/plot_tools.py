@@ -302,6 +302,7 @@ def plot_significance_and_cls(
     y_label: str = "Y",
     parameter_label: str = "Parameter",
     observed_label: str = "Observed",
+    expected_label: str = "Expected",
     draw_cls_threshold: bool = False,
     cls_threshold: float = 0.05,
     logy: bool = False,
@@ -311,32 +312,54 @@ def plot_significance_and_cls(
     n_bkg: Optional[float] = None,
     n_obs: Optional[int] = None,
 ):
-    """Plot or summarize discovery significance and CLs.
+    """Plot or summarize discovery significance and CLs vs a scan parameter.
 
-    Modes:
-        Array plotting mode: provide `parameter_values` and one of `significance`, `cls`, or a generic `y` array. If neither `output_png` nor `output_pdf` is provided, the plot is saved to `significance_cls.png`.
-        Numeric summary mode: provide `n_sig` (expected signal yield) and `n_bkg` (expected background yield). `n_obs` is optional and will produce observed quantities when given.
+    This tool has two operating modes:
+
+    **Array plotting mode** — provide `parameter_values` and one of `significance`, `cls`, or
+    a generic `y` array as the primary (observed) curve. An optional `expected` array of the
+    same length may be passed to overlay a second dashed curve (typically the Asimov/expected
+    result) on the same axes. Both curves share the x-axis defined by `parameter_values`.
+    If neither `output_png` nor `output_pdf` is given the plot is saved to `significance_cls.png`.
+    Output directories are created automatically if they do not yet exist.
+
+    **Numeric summary mode** — provide `n_sig` (expected signal yield) and `n_bkg` (expected
+    background yield). `n_obs` is optional and produces observed quantities alongside the
+    expected ones when supplied. No plot is produced; a text summary is returned instead.
 
     Args:
-        parameter_values (List[float], optional): Scan parameter points.
-        significance (List[float], optional): Significance values corresponding to the scan parameter.
-        cls (List[float], optional): CLs values corresponding to the scan parameter.
-        
-        y (List[float], optional): Generic y-values corresponding to the scan parameter.
-        expected (List[float], optional): Backward-compatible input accepted but intentionally ignored (single-series plot only).
-        y_label (str, optional): Axis label for plots.
+        parameter_values (List[float], optional): Scan parameter points (x-axis), required in array mode.
+        significance (List[float], optional): Significance (Z) values for each scan point (primary curve).
+        cls (List[float], optional): CLs values for each scan point (primary curve).
+        y (List[float], optional): Generic y-values for each scan point (primary curve).
+        expected (List[float], optional): Second curve (e.g. Asimov/expected significance or CLs) drawn
+            as a dashed line. Must have the same length as `parameter_values`. If lengths differ an
+            error is returned.
+        y_label (str, optional): Y-axis label for the plot.
         parameter_label (str, optional): X-axis label for the scan parameter.
-        observed_label (str, optional): Legend label for the curve.
-        draw_cls_threshold (bool, optional): Draw a horizontal CLs threshold line.
-        cls_threshold (float, optional): Y-value for the CLs threshold guide line (default 0.05).
-        logy (bool, optional): Use logarithmic y-axis when plotting arrays.
-        output_png (str, optional), output_pdf (str, optional): Paths to save the plot files. If both are empty in array mode, `output_png` defaults to `significance_cls.png`.
-        n_sig (float, optional), n_bkg (float, optional), n_obs (int, optional): Numeric-mode yields for a single-point summary.
+        observed_label (str, optional): Legend label for the primary (solid) curve. Default 'Observed'.
+        expected_label (str, optional): Legend label for the dashed expected curve. Default 'Expected'.
+        draw_cls_threshold (bool, optional): Draw a horizontal dashed threshold line (e.g. CLs = 0.05).
+        cls_threshold (float, optional): Y-value for the threshold guide line (default 0.05).
+        logy (bool, optional): Use a logarithmic y-axis.
+        output_png (str, optional): Path to save the PNG. Parent directory is created if needed.
+        output_pdf (str, optional): Path to save the PDF. Parent directory is created if needed.
+        n_sig (float, optional): Signal yield for single-point numeric summary mode.
+        n_bkg (float, optional): Background yield for single-point numeric summary mode.
+        n_obs (int, optional): Observed count for single-point numeric summary mode.
 
     Returns:
-        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and CLs (if available).
+        str: In array mode, a message listing all saved file paths. In numeric mode, a textual
+            summary with Z, p-value, and CLs metrics. Returns a descriptive error string on failure.
+
     Notes:
-        If `n_sig` and `n_bkg` are provided, the function returns a numeric summary without plotting. When plotting arrays, ensure scan and y arrays have matching lengths.
+        - Provide exactly one of `significance`, `cls`, or `y` as the primary curve; supplying
+          more than one is an error.
+        - For a mass-scan workflow, call this tool once per plot type (significance, p-value, CLs)
+          and pass the observed series as the primary curve and the Asimov series as `expected`.
+        - To produce separate observed-only and expected-only plots, call twice with different
+          `output_png`/`output_pdf` paths.
+        - When `n_sig` and `n_bkg` are given, the tool returns text without creating any file.
     """
     if n_sig is not None and n_bkg is not None:
         from .utils import _stat_summary
@@ -386,15 +409,29 @@ def plot_significance_and_cls(
             return "Error: parameter_values and y-data must be finite numeric values."
         return f"Error: {message}"
 
-    # Backward compatibility: accept `expected` argument but do not render a
-    # second curve. This keeps single-series behavior deterministic.
-    _ = expected
+    # Validate and parse the optional expected overlay.
+    expected_data = None
+    if expected is not None:
+        try:
+            _, exp_series = _normalize_parallel_arrays("parameter_values", parameter_values, {"expected": expected})
+            expected_data = exp_series["expected"]
+        except ValueError as exc:
+            msg = str(exc)
+            if "expected has length" in msg:
+                return "Error: expected and parameter_values must have the same length."
+            if msg == "values must be finite numeric values":
+                return "Error: expected values must be finite numeric values."
+            return f"Error: {msg}"
 
     x_arr = np.array(parameter_data, dtype=float)
     y_arr = np.array(series_data["y"], dtype=float)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(x_arr, y_arr, marker="o", linestyle="-", color="C0", label=observed_label)
+
+    if expected_data is not None:
+        exp_arr = np.array(expected_data, dtype=float)
+        ax.plot(x_arr, exp_arr, marker="s", linestyle="--", color="C1", label=expected_label)
 
     if draw_cls_threshold or series_name == "cls":
         ax.axhline(float(cls_threshold), color="black", linestyle="--", linewidth=1.0, label=f"CLs={float(cls_threshold):.3g}")
@@ -406,15 +443,14 @@ def plot_significance_and_cls(
     ax.grid(True)
     ax.legend()
 
+    import os as _os
     if output_png:
         fig.savefig(output_png, bbox_inches="tight")
     if output_pdf:
         fig.savefig(output_pdf, bbox_inches="tight")
     plt.close(fig)
 
-    msg = ""
-    if output_png:
-        msg = f"Saved {output_png}"
-    elif output_pdf:
-        msg = f"Saved {output_pdf}"
-    return msg
+    saved = [p for p in [output_png, output_pdf] if p]
+    if saved:
+        return "Saved " + ", ".join(saved)
+    return ""

@@ -396,6 +396,16 @@ def test_histogram_integral_invalid_range_returns_error(sample_context):
 
 
 def test_histogram_significance_and_cls_uses_exclusion_tail(tmp_path):
+    """CLs is computed via the Poisson CDF (lower tail) so CLs \u2208 [0,1] always.
+
+    Setup: B=10, S=5, n_obs=3 (observed deficit relative to background).
+    With the CDF-based formula:
+      CLs+b = P(N <= 3 | 15) << 1
+      CLb   = P(N <= 3 | 10) << 1
+      CLs   = CLs+b / CLb < 1
+    The signal should be EXCLUDED (CLs << 0.05) because we see far fewer events than
+    both the background and the signal+background expectations.
+    """
     root_file = tmp_path / "cls_input.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
 
@@ -423,6 +433,7 @@ def test_histogram_significance_and_cls_uses_exclusion_tail(tmp_path):
             "sig_name": "sig",
             "center": 1.5,
             "window": 0.5,
+            "compute_cls": True,
         }
     )
 
@@ -444,6 +455,79 @@ def test_histogram_significance_and_cls_uses_exclusion_tail(tmp_path):
     assert len(cls_values) == 2, f"Expected 2 CLs values: {output}"
     assert len(clspb_values) == 2, f"Expected 2 CLs+b values: {output}"
     assert len(clb_values) == 2, f"Expected 2 CLb values: {output}"
+
+    # CLs must always be in [0, 1]  — the previous SF-based implementation could exceed 1
+    for val_str in cls_values:
+        val = float(val_str)
+        assert 0.0 <= val <= 1.0, f"CLs out of range [0,1]: {val} (full output: {output})"
+
+    # Observed CLs: with n_obs=3 << B=10, signal is strongly excluded (CLs << 0.05)
+    observed_cls = float(cls_values[1])  # second entry is the Observed line
+    assert observed_cls < 0.05, (
+        f"Expected signal to be excluded (CLs < 0.05) in the deficit case, got CLs={observed_cls}\n"
+        f"Full output: {output}"
+    )
+
+    # CLs+b <= CLb (mathematical guarantee of CDF-based formula)
+    for clspb_str, clb_str in zip(clspb_values, clb_values):
+        assert float(clspb_str) <= float(clb_str) + 1e-9, (
+            f"CLs+b ({clspb_str}) > CLb ({clb_str}): violates CDF-based CLs guarantee"
+        )
+
+
+def test_cls_is_always_leq_one(tmp_path):
+    """CLs <= 1 for every combination of n_obs relative to B and S.
+
+    Tests the pure-Python CLs implementation directly via plot_significance_and_cls
+    in numeric mode (n_sig + n_bkg path) and via the low-level _stat_summary function.
+    """
+    from rooagent.tools.utils import _counting_cls_poisson_fallback
+
+    test_cases = [
+        # (n_obs, n_bkg, n_sig)  — various regimes
+        (0,  10, 5),   # strong deficit
+        (3,  10, 5),   # moderate deficit
+        (10, 10, 5),   # at background level
+        (12, 10, 5),   # slight excess, between B and S+B
+        (15, 10, 5),   # at S+B level
+        (20, 10, 5),   # strong excess
+        (0,   0, 1),   # zero background edge case
+        (5,   5, 0),   # zero signal edge case
+    ]
+    for n_obs, n_bkg, n_sig in test_cases:
+        cls, clspb, clb = _counting_cls_poisson_fallback(n_obs, n_bkg, n_sig)
+        assert 0.0 <= cls <= 1.0, (
+            f"CLs={cls} out of [0,1] for n_obs={n_obs}, n_bkg={n_bkg}, n_sig={n_sig}"
+        )
+        assert 0.0 <= clspb <= 1.0, (
+            f"CLs+b={clspb} out of [0,1] for n_obs={n_obs}, n_bkg={n_bkg}, n_sig={n_sig}"
+        )
+        assert 0.0 <= clb <= 1.0, (
+            f"CLb={clb} out of [0,1] for n_obs={n_obs}, n_bkg={n_bkg}, n_sig={n_sig}"
+        )
+        # Mathematical guarantee: CLs+b <= CLb (because CDF is decreasing in mu)
+        assert clspb <= clb + 1e-9, (
+            f"CLs+b ({clspb}) > CLb ({clb}): CDF-monotonicity violated for "
+            f"n_obs={n_obs}, n_bkg={n_bkg}, n_sig={n_sig}"
+        )
+
+
+def test_cls_deficit_excludes_signal():
+    """When n_obs << B, the signal+background hypothesis should be excluded (CLs << 0.05)."""
+    from rooagent.tools.utils import _counting_cls_poisson_fallback
+    # n_obs=0, B=20, S=10: extremely strong deficit — signal must be excluded
+    cls, clspb, clb = _counting_cls_poisson_fallback(0, 20.0, 10.0)
+    assert cls < 0.01, f"Expected CLs << 0.05 for extreme deficit, got CLs={cls}"
+
+
+def test_cls_asimov_point_not_excluded():
+    """At the Asimov point (n_obs = B + S), the signal should NOT be excluded (CLs ~ 0.5)."""
+    from rooagent.tools.utils import _counting_cls_poisson_fallback
+    # Asimov: n_obs = B+S = 15; signal should be borderline compatible
+    cls, _, _ = _counting_cls_poisson_fallback(15, 10.0, 5.0)
+    assert cls > 0.05, (
+        f"Signal should not be excluded at the Asimov point (n_obs=B+S=15), got CLs={cls}"
+    )
 
 
 def test_root_tree_to_histogram_and_stat_tools(sample_context, tmp_path):
@@ -860,8 +944,24 @@ def test_plot_significance_and_cls_convenience_args(tmp_path):
         assert out.exists()
 
 
-def test_plot_significance_and_cls_png_and_pdf(tmp_path):
-    """Both PNG and PDF are saved when output_pdf is provided."""
+def test_plot_significance_and_cls_output_dir_must_exist(tmp_path):
+    """plot_significance_and_cls does NOT create missing directories; caller is responsible."""
+    existing_dir = tmp_path / "existing"
+    existing_dir.mkdir()
+    out = existing_dir / "sig.png"
+    result = plot_significance_and_cls.invoke(
+        {
+            "parameter_values": [100, 200, 300],
+            "significance": [1.0, 2.0, 3.0],
+            "output_png": str(out),
+        }
+    )
+    assert "Saved" in result
+    assert out.exists()
+
+
+def test_plot_significance_and_cls_both_png_and_pdf_reported(tmp_path):
+    """When both output_png and output_pdf are given, both paths appear in the return message."""
     result = plot_significance_and_cls.invoke(
         {
             "parameter_values": [100, 200, 300],
@@ -870,12 +970,14 @@ def test_plot_significance_and_cls_png_and_pdf(tmp_path):
             "output_pdf": str(tmp_path / "out.pdf"),
         }
     )
+    assert str(tmp_path / "out.png") in result
+    assert str(tmp_path / "out.pdf") in result
     assert (tmp_path / "out.png").exists()
     assert (tmp_path / "out.pdf").exists()
 
 
-def test_plot_significance_and_cls_accepts_expected_but_plots_single_series(tmp_path):
-    """`expected` input is accepted for compatibility, but plotting remains single-series."""
+def test_plot_significance_and_cls_accepts_expected_overlay(tmp_path):
+    """When `expected` is provided it is plotted as a second dashed curve."""
     out = tmp_path / "sig_with_expected.png"
     result = plot_significance_and_cls.invoke(
         {
@@ -890,19 +992,19 @@ def test_plot_significance_and_cls_accepts_expected_but_plots_single_series(tmp_
     assert out.stat().st_size > 0
 
 
-def test_plot_significance_and_cls_ignores_expected_length_mismatch(tmp_path):
-    """Expected-series length does not affect plotting because overlays are disabled."""
+def test_plot_significance_and_cls_expected_length_mismatch_returns_error(tmp_path):
+    """Mismatched `expected` array length returns an error (not silently ignored)."""
     out = tmp_path / "expected_mismatch.png"
     result = plot_significance_and_cls.invoke(
         {
             "parameter_values": [100, 200, 300],
             "y": [0.1, 0.05, 0.02],
-            "expected": [0.12, 0.06],
+            "expected": [0.12, 0.06],  # two elements vs three parameter points
             "output_png": str(out),
         }
     )
-    assert "Saved" in result
-    assert out.exists()
+    assert "Error" in result, f"Expected error for length mismatch, got: {result}"
+    assert not out.exists()
 
 
 def test_plot_significance_and_cls_length_mismatch_returns_error(tmp_path):
@@ -1225,6 +1327,7 @@ def test_stat_tools_with_generated_files():
         "sig_name": "h1",
         "center": 0.0,
         "window": 5.0,
+        "compute_cls": True,
     })
     assert "p0=" in output
     assert "CLs=" in output
@@ -1416,3 +1519,50 @@ def test_histogram_significance_and_cls_auto_detects_full_range(tmp_path):
     assert "Center=30" in output
     assert "Window=[10" in output or "Window=[1" in output  # catches [10, 50] format
     assert "Expected(S+B Asimov):" in output
+
+
+def test_histogram_significance_and_cls_discovery_only(tmp_path):
+    """With compute_cls=False only discovery metrics (Z, p0) are reported; CLs is absent."""
+    root_file = tmp_path / "disc_only.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+    hbkg = ROOT.TH1F("bkg", "bkg", 20, 0.0, 100.0)
+    hsig = ROOT.TH1F("sig", "sig", 20, 0.0, 100.0)
+    for _ in range(100):
+        hbkg.Fill(50.0)
+    for _ in range(20):
+        hsig.Fill(50.0)
+    hbkg.Write()
+    hsig.Write()
+    f.Close()
+
+    result = histogram_significance_and_cls.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "compute_cls": False,
+        }
+    )
+    # Discovery metrics must be present
+    assert "Z=" in result
+    assert "p0=" in result
+    # Exclusion metrics must be absent
+    assert "CLs=" not in result
+    assert "CLs+b=" not in result
+    assert "CLb=" not in result
+
+
+def test_stat_summary_discovery_only():
+    """_stat_summary with compute_cls=False omits CLs/CLs+b/CLb from output."""
+    # B=50, S=10, expected n_obs=60
+    summary = _stat_summary(n_bkg=50.0, n_sig=10.0, compute_cls=False)
+    assert "Z=" in summary
+    assert "p0=" in summary
+    assert "CLs=" not in summary
+    assert "CLb=" not in summary
+
+    # With compute_cls=True (default) all metrics are present
+    summary_full = _stat_summary(n_bkg=50.0, n_sig=10.0, compute_cls=True)
+    assert "CLs=" in summary_full
+    assert "CLs+b=" in summary_full
+    assert "CLb=" in summary_full

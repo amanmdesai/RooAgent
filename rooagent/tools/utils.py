@@ -15,8 +15,8 @@ _canvas_counter = [0]
 # FILE I/O & DISCOVERY: ROOT file and tree introspection
 # ============================================================================
 
-# File I/O: Open ROOT file with zombie check
 def _open_root_file(file_path: Optional[str] = None):
+    # Open the first resolved ROOT file and return the TFile handle, or None on failure.
     paths = _parse_paths(file_path)
     if not paths:
         return None
@@ -33,16 +33,16 @@ def _open_root_file(file_path: Optional[str] = None):
     return f
 
 
-# File discovery: List .root files in directory
 def _get_root_files(directory: str = ".") -> List[str]:
+    # List all .root files in the given directory.
     try:
         return [f for f in os.listdir(directory) if f.lower().endswith(".root")]
     except Exception:
         return []
 
 
-# File introspection: Extract TTree names from ROOT file
 def _get_trees(root_file: ROOT.TFile) -> List[str]:
+    # Return the names of all TTrees in an open ROOT file.
     trees: List[str] = []
     try:
         for key in root_file.GetListOfKeys():
@@ -54,13 +54,12 @@ def _get_trees(root_file: ROOT.TFile) -> List[str]:
     return trees
 
 
-# File exploration: Recursively list all ROOT objects in directory hierarchy
 def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
+    # Recursively enumerate all named objects in a ROOT directory hierarchy.
     entries: List[str] = []
     if root_dir is None:
         return entries
 
-    # Use an explicit stack to avoid deep recursion and make error handling clearer.
     stack = [(root_dir, prefix)]
     while stack:
         cur_dir, cur_prefix = stack.pop()
@@ -92,8 +91,8 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
 # HISTOGRAM UTILITIES: Binning, path parsing, type conversion
 # ============================================================================
 
-# Histogram coarsening: Combine bins to reduce resolution
 def _rebin_hist(hist, rebin: int):
+    # Rebin a TH1 by the given factor; returns the original histogram when rebin <= 1.
     try:
         r = int(rebin) if rebin is not None else 1
     except Exception:
@@ -110,8 +109,8 @@ def _rebin_hist(hist, rebin: int):
         return hist
 
 
-# Path aggregation: Merge comma-separated and list file paths, removing duplicates
 def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] = None) -> List[str]:
+    # Merge comma-separated string and list file/directory paths into a deduplicated absolute-path list.
     parsed: List[str] = []
 
     def _add_entry(p: str):
@@ -154,10 +153,8 @@ def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] 
     return result
 
 
-# Type conversion: Parse string/list/scalar into float array
 def _to_float_list(v):
-    if v is None:
-        return []
+    # Parse a scalar, comma-string, or list into a list of floats.
     if isinstance(v, str):
         return [float(s.strip()) for s in v.split(",") if s.strip()]
     if isinstance(v, (list, tuple)):
@@ -166,9 +163,7 @@ def _to_float_list(v):
 
 
 def _to_int_list(v):
-    # Parse input into a list of ints (returns [] on invalid input)
-    if v is None:
-        return []
+    # Parse a scalar, comma-string, or list into a list of ints; returns [] on any invalid input.
     if isinstance(v, str):
         items = [s.strip() for s in v.split(",") if s.strip()]
     elif isinstance(v, (list, tuple)):
@@ -188,7 +183,7 @@ def _to_int_list(v):
 
 
 def _parse_numeric_array(values, integer: bool = False):
-    # Parse numeric input into a list of finite numbers (integer -> ints when requested)
+    # Parse input into a list of finite floats or ints, raising ValueError on non-finite values.
     parsed = _to_int_list(values) if integer else _to_float_list(values)
     if any(not math.isfinite(value) for value in parsed):
         raise ValueError("values must be finite numeric values")
@@ -196,7 +191,7 @@ def _parse_numeric_array(values, integer: bool = False):
 
 
 def _normalize_parallel_arrays(reference_name: str, reference_values, series: Dict[str, object], integer_series=None):
-    # Normalize and validate parallel arrays against a reference (integer-series optional)
+    # Validate and parse all series arrays against a reference, ensuring equal lengths.
     integer_series = set(integer_series or [])
     reference = _parse_numeric_array(reference_values)
     if not reference:
@@ -215,13 +210,14 @@ def _normalize_parallel_arrays(reference_name: str, reference_values, series: Di
 
 
 def _default_scan_sort(series_names: List[str]) -> str:
-    # Choose a sensible default sort key from available series names
+    # Choose the preferred sort key from available scan series names (favours z_obs, then z_exp, then cls).
     preferred = [
         "z_obs",
         "observed_significance",
-        "significance",
+        "observed_pvalue",
         "z_exp",
         "expected_significance",
+        "expected_pvalue",
         "cls",
     ]
     lowered = {name.lower(): name for name in series_names}
@@ -232,9 +228,9 @@ def _default_scan_sort(series_names: List[str]) -> str:
 
 
 def _scan_sort_descending(series_name: str) -> bool:
-    # Return True when larger series values should be considered better
+    # Return True if larger values are better for this series (e.g. Z), False if smaller is better (e.g. CLs, p0).
     lowered = series_name.lower().replace("_", " ")
-    lower_better_tokens = ("cls", "p0", "p value", "p-value", "yield up")
+    lower_better_tokens = ("cls", "p0", "p value", "mu up", "yield up")
     return not any(token in lowered for token in lower_better_tokens)
 
 
@@ -247,7 +243,7 @@ def _format_scan_summary(
     top_n: int = 5,
     descending: Optional[bool] = None,
 ) -> str:
-    # Format a compact, human-readable summary of a parameter scan
+    # Format a ranked summary table for a completed parameter scan.
     if not series:
         raise ValueError("series must contain at least one named array")
 
@@ -286,8 +282,8 @@ def _format_scan_summary(
 # VECTOR BRANCH HANDLING: Detection and RDataFrame VecOps rewriting
 # ============================================================================
 
-# Vector detection: Identify branches with std::vector type for VecOps rewriting
 def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
+    # Return branch names whose type contains 'vector' (used to trigger VecOps rewriting).
     f = _open_root_file(file_path)
     if not f:
         return []
@@ -308,8 +304,8 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     return vector_branches
 
 
-# Vector cut rewriting: Convert vector comparisons to ROOT::VecOps::Any/All for RDataFrame
 def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
+    # Wrap vector-branch comparisons with ROOT::VecOps::Any or All to make them valid RDataFrame filters.
     cut = re.sub(r"\bTrue\b", "true", cut)
     cut = re.sub(r"\bFalse\b", "false", cut)
     cut = re.sub(r"\band\b", "&&", cut)
@@ -336,15 +332,15 @@ def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> 
 # RDATAFRAME OPERATIONS: Lazy evaluation, event selection, yield extraction
 # ============================================================================
 
-# Lazy evaluation: Initialize RDataFrame from tree (single or merged files)
 def _build_dataframe(tree_name: str, files: List[str]):
+    # Create an RDataFrame from one or more ROOT files.
     if len(files) == 1:
         return ROOT.RDataFrame(tree_name, files[0])
     return ROOT.RDataFrame(tree_name, files)
 
 
-# Introspection: Check if column exists in RDataFrame
 def _has_column(df, column_name: str) -> bool:
+    # Check whether a column exists in an RDataFrame.
     if not column_name:
         return False
 
@@ -352,29 +348,29 @@ def _has_column(df, column_name: str) -> bool:
     return column_name in cols
 
 
-# Event counting: Sum weighted events passing a selection cut
 def _filtered_yield(df, cut: str, weight: Optional[str] = None):
+    # Return the (weighted) event yield passing a selection cut.
     filtered = df.Filter(cut)
     if weight and _has_column(filtered, weight):
         return filtered.Sum(weight).GetValue()
     return filtered.Count().GetValue()
 
 
-# Total yield: Sum all events (weighted or unweighted)
 def _total_yield(df, weight: Optional[str] = None):
+    # Return the total (weighted) event count of a dataframe.
     if weight and _has_column(df, weight):
         return df.Sum(weight).GetValue()
     return df.Count().GetValue()
 
 
-# Plotting utility: Generate unique canvas identifier
 def _unique_canvas_name(base: str) -> str:
+    # Generate a unique ROOT canvas/histogram name by appending a global counter.
     _canvas_counter[0] += 1
     return f"{base}_{_canvas_counter[0]}"
 
 
-# Event selection: Apply ordered physics cuts (auto-rewrites vector expressions)
 def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], vector_mode: str):
+    # Apply a list of physics selection cuts to an RDataFrame, rewriting vector expressions as needed.
     if not cuts:
         return df
 
@@ -388,8 +384,8 @@ def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], v
     return df
 
 
-# Weight validation: Ensure weight branch exists in dataframe
 def _resolve_weight_branch(df, weight_branch: str) -> str:
+    # Return the weight branch name if it exists in the dataframe, otherwise return an empty string.
     if not weight_branch:
         return ""
     return weight_branch if _has_column(df, weight_branch) else ""
@@ -399,8 +395,8 @@ def _resolve_weight_branch(df, weight_branch: str) -> str:
 # HISTOGRAM I/O & BUILDING: Load, create, and manipulate histograms
 # ============================================================================
 
-# Histogram I/O: Load stored histogram from ROOT file
 def _load_hist(file_path: str, hist_name: str, rebin: int):
+    # Load a named TH1 from a ROOT file and return (histogram, None) or (None, error_string).
     f = _open_root_file(file_path)
     if not f:
         return None, f"Error: could not open file {file_path}."
@@ -416,7 +412,6 @@ def _load_hist(file_path: str, hist_name: str, rebin: int):
     return h, None
 
 
-# Histogram creation: Build 1D histogram from tree variable with cuts and weights
 def _build_tree_hist(
     file_path: str,
     tree_name: str,
@@ -431,6 +426,7 @@ def _build_tree_hist(
     rebin: int = 1,
     apply_cuts_before_plot: bool = True,
 ):
+    # Project a TTree branch into a TH1 via RDataFrame, applying optional cuts and weights.
     files = _parse_paths(file_path)
     if not files:
         raise RuntimeError("No ROOT files found to build histogram.")
@@ -461,8 +457,8 @@ def _build_tree_hist(
 # PLOTTING INFRASTRUCTURE: Canvas setup, styling, overlay mechanics
 # ============================================================================
 
-# Plotting canvas: Setup upper plot + optional lower ratio pad
 def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
+    # Create a ROOT canvas with an optional split upper/lower pad layout for ratio panels.
     canvas = ROOT.TCanvas(canvas_name, canvas_title, 900, 800 if show_ratio else 700)
     if not show_ratio:
         return canvas, None, None
@@ -480,8 +476,8 @@ def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
     return canvas, upper_pad, lower_pad
 
 
-# Ratio styling: Format ratio histogram axes and range for data/MC or S/B
 def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
+    # Apply axis styling appropriate for a ratio panel (enlarged labels, fixed y-range [0, 2]).
     ratio_hist.SetTitle("")
     ratio_hist.GetXaxis().SetTitle(x_title)
     ratio_hist.GetYaxis().SetTitle(y_title)
@@ -496,8 +492,8 @@ def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
     ratio_hist.SetMaximum(2.0)
 
 
-# Ratio histograms: Compute histogram ratios (each hist divided by first)
 def _build_reference_ratio_hists(hist_list: List):
+    # Divide every histogram in the list by the first, returning a list of ratio histograms.
     if len(hist_list) < 2:
         return []
 
@@ -513,8 +509,8 @@ def _build_reference_ratio_hists(hist_list: List):
     return ratio_hists
 
 
-# Signal-background ratio: Divide signal by summed backgrounds
 def _build_signal_background_ratio(signal_hist, background_hists: List):
+    # Divide the signal histogram by the sum of all background histograms.
     if signal_hist is None or not background_hists:
         return None
 
@@ -532,8 +528,8 @@ def _build_signal_background_ratio(signal_hist, background_hists: List):
     return ratio
 
 
-# Ratio panel: Draw ratio histograms in lower pad with reference line
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
+    # Draw pairwise ratio histograms (each divided by the first) in the lower pad.
     if lower_pad is None:
         return
 
@@ -555,7 +551,6 @@ def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
     unity.Draw()
 
 
-# Overlay plot: Draw multiple histograms on same axes with optional ratio pad
 def _draw_overlay_plot(
     hist_list: List,
     legend,
@@ -568,6 +563,7 @@ def _draw_overlay_plot(
     logy: bool = False,
     draw_options: Optional[List[str]] = None,
 ):
+    # Draw multiple histograms on a shared canvas, optionally with a ratio panel, and save to file.
     if not hist_list:
         return "No histograms created."
 
@@ -629,7 +625,6 @@ def _draw_overlay_plot(
 # 1D PLOTTING: Histograms, trees, comparisons, signal vs background
 # ============================================================================
 
-# 1D histogram plot: Visualize stored histogram with optional normalization
 def _plot_hist(
     file_path: str,
     hist_name: str,
@@ -640,6 +635,7 @@ def _plot_hist(
     normalize: bool,
     rebin: int,
 ):
+    # Plot a stored TH1 and save to PDF.
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
         return err
@@ -670,7 +666,6 @@ def _plot_hist(
     return f"Saved 1D histogram {hist_name} to {output_pdf}"
 
 
-# Tree variable plot: Visualize tree branch with cuts and weights
 def _plot_tree(
     file_path: str,
     tree_name: str,
@@ -686,6 +681,7 @@ def _plot_tree(
     vector_mode: str,
     apply_cuts_before_plot: bool = True,
 ):
+    # Project a TTree branch to a histogram and save the plot to PDF.
     h = _build_tree_hist(
         file_path=file_path,
         tree_name=tree_name,
@@ -726,7 +722,6 @@ def _plot_tree(
     return f"Saved plot to {output_pdf}"
 
 
-# Overlaid tree comparison: Plot same variable from multiple files with ratio
 def _plot_tree_compare(
     file_paths: List[str],
     tree_name: str,
@@ -744,6 +739,7 @@ def _plot_tree_compare(
     vector_mode: str,
     apply_cuts_before_plot: bool = True,
 ):
+    # Overlay the same variable from multiple files on a single canvas with an optional ratio panel.
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
 
@@ -792,7 +788,6 @@ def _plot_tree_compare(
     return f"Saved comparison histogram to {output_pdf}"
 
 
-# Overlaid histogram comparison: Plot stored histograms from multiple files
 def _plot_hist_compare(
     file_paths: List[str],
     hist_names: List[str],
@@ -805,6 +800,7 @@ def _plot_hist_compare(
     show_ratio: bool,
     rebin: int,
 ):
+    # Overlay stored TH1 histograms from multiple files and save the comparison plot.
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
 
@@ -857,7 +853,6 @@ def _plot_hist_compare(
     return msg
 
 
-# Signal-background visualization: Overlay signal+background+optional data with S/B ratio panel
 def _plot_signal_vs_backgrounds(
     signal_file: str,
     signal_files: Optional[List[str]],
@@ -882,6 +877,7 @@ def _plot_signal_vs_backgrounds(
     vector_mode: str,
     apply_cuts_before_plot: bool = True,
 ):
+    # Produce a signal-vs-stacked-backgrounds comparison plot with an optional data overlay and S/B ratio panel.
     signal_paths = _parse_paths(signal_file, signal_files)
     if not signal_paths:
         return "Error: at least one signal file must be provided via signal_file or signal_files."
@@ -1165,7 +1161,6 @@ def _plot_signal_vs_backgrounds(
 # 2D PLOTTING: 2D histograms and kinematic correlations
 # ============================================================================
 
-# 2D histogram plot: Visualize stored 2D histogram with color palette
 def _plot_2d_hist(
     file_path: str,
     hist_name: str,
@@ -1179,6 +1174,7 @@ def _plot_2d_hist(
     rebin_y: int = 2,
     color_palette: int = 1,
 ):
+    # Plot a stored TH2 with a colour-z palette and save to PDF.
     f = ROOT.TFile.Open(file_path)
     if not f or f.IsZombie():
         return f"Error: Could not open file {file_path}"
@@ -1217,7 +1213,6 @@ def _plot_2d_hist(
     return f"Saved 2D histogram to {output_pdf}"
 
 
-# 2D scatter plot: Visualize kinematic correlations from tree branches
 def _plot_2d_tree(
     file_path: str,
     tree_name: str,
@@ -1241,7 +1236,7 @@ def _plot_2d_tree(
     vector_mode: str = "any",
     apply_cuts_before_plot: bool = True,
 ):
-    # Prefer RDataFrame->Histo2D so we can apply cuts and weights consistently.
+    # Build a 2D histogram from two TTree branches via RDataFrame and save the scatter plot.
     try:
         df = ROOT.RDataFrame(tree_name, file_path)
     except Exception:
@@ -1334,8 +1329,8 @@ def _plot_2d_tree(
 # HISTOGRAM RETRIEVAL & MASS WINDOWS: Load histograms and extract counts
 # ============================================================================
 
-# Histogram retrieval: Load histogram from open ROOT file
 def _get_hist(f, name: str):
+    # Retrieve a named histogram from an open ROOT file, detaching it from the file's memory.
     if not f:
         return None
     h = f.Get(name)
@@ -1349,7 +1344,6 @@ def _get_hist(f, name: str):
     return h
 
 
-# Counting window: Extract signal/background counts in mass window from file
 def _counting_window_inputs(
     file_path: str,
     bkg_name: str,
@@ -1358,6 +1352,7 @@ def _counting_window_inputs(
     center: float,
     window: float,
 ):
+    # Load signal, background and optional data histograms and integrate them over the mass window.
     if not file_path:
         return None, "Error: file_path is required."
 
@@ -1402,24 +1397,24 @@ def _counting_window_inputs(
 # COUNTING-STATISTICS UTILITIES: CLs and significance helpers
 # ============================================================================
 
-# Probability clipping: Ensure probability is in valid [0,1] range
 def _clip_probability(value: float) -> float:
+    # Clamp a value to [0, 1]; maps non-finite values to 0.
     if not math.isfinite(value):
         return 0.0
     return max(0.0, min(1.0, float(value)))
 
 
 def _poisson_cdf_leq(n: int, mu: float) -> float:
-    # Poisson CDF (P(N <= n))
+    # Compute P(N <= n | mu) using the Poisson CDF (lower tail).
     n_val = max(0, int(n))
     mu_val = max(0.0, float(mu))
     return _clip_probability(float(poisson.cdf(n_val, mu_val)))
 
 
-# Compute CLs, CLs+b and CLb using Poisson survival-function fallback
 def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
-    clb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg)))
-    clspb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
+    # Compute CLs, CLs+b and CLb via Poisson CDF lower tails, ensuring CLs in [0, 1].
+    clb   = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg)))
+    clspb = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
 
     cls = float("inf") if clb <= 0.0 else (clspb / clb)
     return _clip_probability(cls), _clip_probability(clspb), _clip_probability(clb)
@@ -1429,8 +1424,8 @@ def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
 # STATISTICAL CALCULATIONS: Significance and p-values
 # ============================================================================
 
-# Mass window counting: Integrate histogram over fractional bins in window
 def _fractional_integral(hist, center: float, window: float) -> float:
+    # Integrate a TH1 over [center-window, center+window] with fractional bin-edge interpolation.
     xlow = center - window
     xhigh = center + window
     ax = hist.GetXaxis()
@@ -1449,7 +1444,7 @@ def _fractional_integral(hist, center: float, window: float) -> float:
 
 
 def _poisson_sf_geq(n: int, mu: float) -> float:
-    # Survival function P(N >= n) = 1 - CDF(n-1)
+    # Compute P(N >= n | mu) using the Poisson survival function (upper tail, p0 convention).
     n_val = max(0, int(n))
     mu_val = max(0.0, float(mu))
     if n_val <= 0:
@@ -1457,8 +1452,8 @@ def _poisson_sf_geq(n: int, mu: float) -> float:
     return _clip_probability(float(poisson.sf(n_val - 1, mu_val)))
 
 
-# P-value to Z: Convert p-value to Gaussian discovery significance
 def _significance_from_pvalue(pvalue: float) -> float:
+    # Convert a one-sided p-value to a Gaussian significance Z = Phi^{-1}(1 - p).
     pvalue_val = _clip_probability(float(pvalue))
     if not (0.0 < pvalue_val < 1.0):
         return 0.0
@@ -1468,8 +1463,8 @@ def _significance_from_pvalue(pvalue: float) -> float:
         return 0.0
 
 
-# Statistical test significance: p-value inversion (fast counting approximation)
 def _compute_significance_from_yields(S: float, B: float) -> float:
+    # Compute Asimov discovery significance Z from signal and background yields.
     s = float(S)
     b = float(B)
     if s <= 0.0 and b <= 0.0:
@@ -1483,8 +1478,8 @@ def _compute_significance_from_yields(S: float, B: float) -> float:
     return _significance_from_pvalue(p0)
 
 
-# Cut-optimization significance: S/sqrt(S+B)
 def _optimal_cut_significance(S: float, B: float) -> float:
+    # Return S/sqrt(S+B) as a fast cut-optimisation figure of merit.
     s = max(0.0, float(S))
     b = max(0.0, float(B))
     denom = s + b
@@ -1493,62 +1488,59 @@ def _optimal_cut_significance(S: float, B: float) -> float:
     return s / math.sqrt(denom)
 
 
-# Compute a full set of counting-statistics metrics (p0/Z, CLs)
-def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl: float = 0.95):
+def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float,
+                             cl: float = 0.95, compute_cls: bool = True):
+    # Compute discovery (p0, Z) and optionally exclusion (CLs, CLs+b, CLb) counting statistics.
     n_b = max(0.0, float(n_bkg))
     n_s = max(0.0, float(n_sig))
 
-    # Observed-like line (use n_obs if provided, else use Asimov expected)
     if n_obs is None:
         n_obs_for_observed = max(0, int(round(n_b + n_s)))
     else:
         n_obs_for_observed = max(0, int(n_obs))
-    # Observed discovery p0/Z (pure-Python counting)
+
     p0_obs = _poisson_sf_geq(n_obs_for_observed, n_b)
     z_obs = _significance_from_pvalue(p0_obs)
 
-    # Expected (Asimov) discovery via p-value inversion
     n_exp = max(0, int(round(n_b + n_s)))
     p0_exp = _poisson_sf_geq(n_exp, n_b)
     z_exp = _significance_from_pvalue(p0_exp)
 
-    # Exclusion (CLs)
-    n_for_exclusion = n_obs_for_observed
-    cls, clspb, clb = _counting_cls_poisson_fallback(n_for_exclusion, n_b, n_s)
-
-    return {
+    result = {
         "p0_obs": p0_obs,
         "z_obs": z_obs,
         "p0_exp": p0_exp,
         "z_exp": z_exp,
-        "CLs": cls,
-        "CLs+b": clspb,
-        "CLb": clb,
     }
 
+    if compute_cls:
+        cls, clspb, clb = _counting_cls_poisson_fallback(n_obs_for_observed, n_b, n_s)
+        result["CLs"] = cls
+        result["CLs+b"] = clspb
+        result["CLb"] = clb
 
-# Summary: format expected and observed p0/Z/CLs for display
-def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None) -> str:
+    return result
+
+
+def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None,
+                  compute_cls: bool = True) -> str:
+    # Format a human-readable expected (and optionally observed) statistics summary line.
     n_bkg_val = max(0.0, float(n_bkg))
     n_sig_val = max(0.0, float(n_sig))
 
     def _line(n: int) -> str:
         n_val = max(0, int(n))
-        stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val)
+        stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val, compute_cls=compute_cls)
         p0 = stats.get("p0_obs", float("nan"))
         z = stats.get("z_obs", float("nan"))
-        cls = stats.get("CLs", float("nan"))
-        clspb = stats.get("CLs+b", float("nan"))
-        clb = stats.get("CLb", float("nan"))
-        # Report the one-sided discovery significance (non-negative).
-        # Negative signs for deficits are intentionally suppressed so the
-        # reported Z is always >= 0. This mirrors the behavior of
-        # `_significance_from_pvalue` which clips to 0.
         z_str = f"{z:.4g}sigma"
-        return (
-            f"N={n_val}  p0={p0:.4g}  Z={z_str}  "
-            f"CLs={cls:.4g}  CLs+b={clspb:.4g}  CLb={clb:.4g}"
-        )
+        base = f"N={n_val}  p0={p0:.4g}  Z={z_str}"
+        if compute_cls:
+            cls = stats.get("CLs", float("nan"))
+            clspb = stats.get("CLs+b", float("nan"))
+            clb = stats.get("CLb", float("nan"))
+            base += f"  CLs={cls:.4g}  CLs+b={clspb:.4g}  CLb={clb:.4g}"
+        return base
 
     n_exp = max(0, int(round(n_bkg_val + n_sig_val)))
     result = f"Expected(S+B Asimov): {_line(n_exp)}"
