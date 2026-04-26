@@ -12,7 +12,6 @@ from .utils import (
     _plot_signal_vs_backgrounds,
     _plot_tree,
     _plot_tree_compare,
-    _to_float_list,
 )
 
 

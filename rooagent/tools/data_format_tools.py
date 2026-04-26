@@ -16,8 +16,6 @@ def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output
 
     Returns:
         str: Confirmation message with saved CSV path or an error message.
-    Returns:
-        str: confirmation message with saved CSV path or an error message.
 
     Notes:
         Make explicit whether vector branches should be expanded and the maximum expansion (`max_vector_size`) when prompting the user.

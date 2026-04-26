@@ -17,12 +17,6 @@ _canvas_counter = [0]
 
 # File I/O: Open ROOT file with zombie check
 def _open_root_file(file_path: Optional[str] = None):
-    """Open a ROOT file resolving directories and defaults.
-
-    If `file_path` is a directory, or falsy, try to find .root files in the
-    directory (current working directory when omitted) and open the first one.
-    Returns a TFile or None on failure.
-    """
     paths = _parse_paths(file_path)
     if not paths:
         return None
@@ -63,23 +57,34 @@ def _get_trees(root_file: ROOT.TFile) -> List[str]:
 # File exploration: Recursively list all ROOT objects in directory hierarchy
 def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
     entries: List[str] = []
-    try:
-        for key in root_dir.GetListOfKeys():
-            obj = key.ReadObj()
-            if obj is None:
-                continue
-            name = obj.GetName()
-            class_name = obj.ClassName() if hasattr(obj, "ClassName") else type(obj).__name__
-            full = f"{prefix}{name} ({class_name})"
-            entries.append(full)
+    if root_dir is None:
+        return entries
 
-            if obj.InheritsFrom("TDirectory") if hasattr(obj, "InheritsFrom") else False:
+    # Use an explicit stack to avoid deep recursion and make error handling clearer.
+    stack = [(root_dir, prefix)]
+    while stack:
+        cur_dir, cur_prefix = stack.pop()
+        try:
+            for key in cur_dir.GetListOfKeys():
                 try:
-                    entries.extend(_list_objects_recursive(obj, prefix=f"{prefix}{name}/"))
+                    obj = key.ReadObj()
                 except Exception:
-                    pass
-    except Exception:
-        pass
+                    continue
+                if obj is None:
+                    continue
+                name = obj.GetName()
+                class_name = obj.ClassName() if hasattr(obj, "ClassName") else type(obj).__name__
+                entries.append(f"{cur_prefix}{name} ({class_name})")
+
+                try:
+                    is_dir = obj.InheritsFrom("TDirectory") if hasattr(obj, "InheritsFrom") else False
+                except Exception:
+                    is_dir = False
+                if is_dir:
+                    stack.append((obj, f"{cur_prefix}{name}/"))
+        except Exception:
+            # ignore unreadable directories and continue
+            continue
     return entries
 
 
@@ -107,15 +112,6 @@ def _rebin_hist(hist, rebin: int):
 
 # Path aggregation: Merge comma-separated and list file paths, removing duplicates
 def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] = None) -> List[str]:
-    """Resolve primary and additional path inputs to a list of file paths.
-
-    Behavior:
-    - Accepts comma-separated strings in `primary` and lists in `additional`.
-    - If an entry is a directory, expand to all `.root` files inside it.
-    - If no paths are provided or nothing resolves, default to all `.root`
-      files in the current working directory.
-    - Returns absolute, deduplicated paths preserving order.
-    """
     parsed: List[str] = []
 
     def _add_entry(p: str):
@@ -170,8 +166,7 @@ def _to_float_list(v):
 
 
 def _to_int_list(v):
-    # Parse input (scalar, list/tuple, or CSV string) into a list of ints.
-    # Returns an empty list on invalid input.
+    # Parse input into a list of ints (returns [] on invalid input)
     if v is None:
         return []
     if isinstance(v, str):
@@ -193,8 +188,7 @@ def _to_int_list(v):
 
 
 def _parse_numeric_array(values, integer: bool = False):
-    # Parse and validate numeric input into a list of numbers.
-    # `integer=True` returns rounded integers, otherwise floats.
+    # Parse numeric input into a list of finite numbers (integer -> ints when requested)
     parsed = _to_int_list(values) if integer else _to_float_list(values)
     if any(not math.isfinite(value) for value in parsed):
         raise ValueError("values must be finite numeric values")
@@ -202,8 +196,7 @@ def _parse_numeric_array(values, integer: bool = False):
 
 
 def _normalize_parallel_arrays(reference_name: str, reference_values, series: Dict[str, object], integer_series=None):
-    # Parse and validate parallel arrays against a reference array.
-    # Optionally parse specified series as integers.
+    # Normalize and validate parallel arrays against a reference (integer-series optional)
     integer_series = set(integer_series or [])
     reference = _parse_numeric_array(reference_values)
     if not reference:
@@ -222,7 +215,7 @@ def _normalize_parallel_arrays(reference_name: str, reference_values, series: Di
 
 
 def _default_scan_sort(series_names: List[str]) -> str:
-    # Choose a sensible default sort key from available series names.
+    # Choose a sensible default sort key from available series names
     preferred = [
         "z_obs",
         "observed_significance",
@@ -239,9 +232,9 @@ def _default_scan_sort(series_names: List[str]) -> str:
 
 
 def _scan_sort_descending(series_name: str) -> bool:
-    # Return True when larger series values should be considered better.
+    # Return True when larger series values should be considered better
     lowered = series_name.lower().replace("_", " ")
-    lower_better_tokens = ("cls", "p0", "p value", "p-value", "mu up", "yield up")
+    lower_better_tokens = ("cls", "p0", "p value", "p-value", "yield up")
     return not any(token in lowered for token in lower_better_tokens)
 
 
@@ -254,8 +247,7 @@ def _format_scan_summary(
     top_n: int = 5,
     descending: Optional[bool] = None,
 ) -> str:
-    # Format a compact, human-readable summary of a parameter scan.
-    # Combines parameter values with series and lists top-ranked candidates.
+    # Format a compact, human-readable summary of a parameter scan
     if not series:
         raise ValueError("series must contain at least one named array")
 
@@ -318,9 +310,6 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
 
 # Vector cut rewriting: Convert vector comparisons to ROOT::VecOps::Any/All for RDataFrame
 def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
-    # Always normalise Python boolean/logical syntax to C++ equivalents so that
-    # cuts written naturally by an LLM (True, False, and, or) are valid for
-    # RDataFrame regardless of whether vector rewriting is needed.
     cut = re.sub(r"\bTrue\b", "true", cut)
     cut = re.sub(r"\bFalse\b", "false", cut)
     cut = re.sub(r"\band\b", "&&", cut)
@@ -932,6 +921,11 @@ def _plot_signal_vs_backgrounds(
         ROOT.kPink - 8,
         ROOT.kViolet - 6,
         ROOT.kCyan - 6,
+        ROOT.kGray + 2,
+        ROOT.kYellow - 7,
+        ROOT.TColor.GetColor("#cfc9b3"),
+        ROOT.TColor.GetColor("#bcd9d3"),
+        ROOT.TColor.GetColor("#e8dff8"),
     ]
 
     for i, fpath in enumerate(background_paths):
@@ -1416,15 +1410,14 @@ def _clip_probability(value: float) -> float:
 
 
 def _poisson_cdf_leq(n: int, mu: float) -> float:
+    # Poisson CDF (P(N <= n))
     n_val = max(0, int(n))
     mu_val = max(0.0, float(mu))
     return _clip_probability(float(poisson.cdf(n_val, mu_val)))
 
 
+# Compute CLs, CLs+b and CLb using Poisson survival-function fallback
 def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
-    # Use right-tail (>= n_obs) Poisson survival function for counting CLs.
-    # This matches the standard CLs convention where larger counts are
-    # considered more signal-like. Returns (CLs, CLs+b, CLb).
     clb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg)))
     clspb = _poisson_sf_geq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
 
@@ -1432,13 +1425,6 @@ def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
     return _clip_probability(cls), _clip_probability(clspb), _clip_probability(clb)
 
 
-def _exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
-    """Pure-Python CLs summary for counting experiments.
-    Returns (CLs, CLs+b, CLb) computed from Poisson survival functions using
-    the right-tail convention (>= n_obs), consistent with common HEP
-    CLs definitions.
-    """
-    return _counting_cls_poisson_fallback(n_obs, n_bkg, n_sig)
 # ============================================================================
 # STATISTICAL CALCULATIONS: Significance and p-values
 # ============================================================================
@@ -1528,7 +1514,7 @@ def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl
 
     # Exclusion (CLs)
     n_for_exclusion = n_obs_for_observed
-    cls, clspb, clb = _exclusion_summary(n_for_exclusion, n_b, n_s)
+    cls, clspb, clb = _counting_cls_poisson_fallback(n_for_exclusion, n_b, n_s)
 
     return {
         "p0_obs": p0_obs,
