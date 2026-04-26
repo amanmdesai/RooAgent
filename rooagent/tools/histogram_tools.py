@@ -8,9 +8,17 @@ from .utils import _load_hist
 
 @tool
 def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
-    """Return mean, RMS, and entries for a TH1 histogram.
+    """Extract basic statistics (mean, RMS, entries) from a histogram stored in a ROOT file.
 
-    rebin: optional rebin factor applied before computing stats.
+    Args:
+        file_path (str): ROOT file path.
+        hist_name (str): Histogram name to query.
+        rebin (int, optional): Rebin factor applied before computing statistics (default 1).
+
+    Returns:
+        str: Formatted string with Mean, RMS and Entries or an error message if the histogram cannot be loaded.
+    Notes:
+        If the histogram is not found, return a clear error mentioning `hist_name` and `file_path`.
     """
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
@@ -31,7 +39,21 @@ def histogram_integral(
     include_overflow: bool = False,
     rebin: int = 1,
 ) -> str:
-    """Integrate a TH1 between x_low and x_high, returning count ± stat error."""
+    """Integrate a histogram over a specified x-range and return the integral with uncertainty.
+
+    Args:
+        file_path (str): ROOT file path containing the histogram.
+        hist_name (str): Name of the histogram to integrate.
+        x_low (float): Lower integration limit (inclusive).
+        x_high (float): Upper integration limit (exclusive).
+        include_overflow (bool, optional): Whether to include underflow/overflow bins in the integral.
+        rebin (int, optional): Rebin factor applied before integration.
+
+    Returns:
+        str: Textual result with the integrated value, the error estimate, and the effective bin range used; or an error message for invalid ranges.
+    Notes:
+        Validate that `x_low < x_high` and that the requested interval overlaps the histogram axis; provide clear guidance when user limits lie outside the histogram axis.
+    """
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
         return err
@@ -82,4 +104,4 @@ def histogram_integral(
     x_actual_hi = ax.GetBinUpEdge(bin_hi)
 
     return (f"Integral '{hist_name}' x=[{x_actual_lo:.5g},{x_actual_hi:.5g}]"
-            f" bins=[{bin_lo},{bin_hi}]: {integral:.6g}±{error_val:.6g}{warn}")
+            f" bins=[{bin_lo},{bin_hi}]: {integral:.6g}+-{error_val:.6g}{warn}")

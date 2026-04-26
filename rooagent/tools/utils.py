@@ -1,24 +1,35 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pathlib import Path
 import os
 import re
 import math
 import ROOT
+from scipy.stats import norm, poisson
+from scipy.special import gammainccinv
 
 
-# Module-level counter for unique canvas names shared across tools
+
 _canvas_counter = [0]
-_roostats_counter = [0]
 
 
-###############################
-# tfile_tools.py helpers
-###############################
+# ============================================================================
+# FILE I/O & DISCOVERY: ROOT file and tree introspection
+# ============================================================================
 
+# File I/O: Open ROOT file with zombie check
+def _open_root_file(file_path: Optional[str] = None):
+    """Open a ROOT file resolving directories and defaults.
 
-# Open a ROOT TFile and return it, or None if the file cannot be opened.
-def _open_root_file(file_path: str):
-    f = ROOT.TFile.Open(file_path)
+    If `file_path` is a directory, or falsy, try to find .root files in the
+    directory (current working directory when omitted) and open the first one.
+    Returns a TFile or None on failure.
+    """
+    paths = _parse_paths(file_path)
+    if not paths:
+        return None
+
+    target = paths[0]
+    f = ROOT.TFile.Open(target)
     if not f or f.IsZombie():
         try:
             if f:
@@ -29,7 +40,7 @@ def _open_root_file(file_path: str):
     return f
 
 
-# Return a list of .root filenames in `directory` (non-recursive).
+# File discovery: List .root files in directory
 def _get_root_files(directory: str = ".") -> List[str]:
     try:
         return [f for f in os.listdir(directory) if f.lower().endswith(".root")]
@@ -37,7 +48,7 @@ def _get_root_files(directory: str = ".") -> List[str]:
         return []
 
 
-# Extract TTree names from an opened ROOT file object.
+# File introspection: Extract TTree names from ROOT file
 def _get_trees(root_file: ROOT.TFile) -> List[str]:
     trees: List[str] = []
     try:
@@ -50,7 +61,7 @@ def _get_trees(root_file: ROOT.TFile) -> List[str]:
     return trees
 
 
-# Recursively list objects in a ROOT directory, returning "name (Class)" strings.
+# File exploration: Recursively list all ROOT objects in directory hierarchy
 def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List[str]:
     entries: List[str] = []
     try:
@@ -73,14 +84,12 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
     return entries
 
 
-###############################
-# histogram_tools.py helpers
-# (also used by plot_tools.py)
-###############################
+# ============================================================================
+# HISTOGRAM UTILITIES: Binning, path parsing, type conversion
+# ============================================================================
 
-
+# Histogram coarsening: Combine bins to reduce resolution
 def _rebin_hist(hist, rebin: int):
-    # Rebin a histogram by integer factor `rebin`, returning the rebinned object.
     try:
         r = int(rebin) if rebin is not None else 1
     except Exception:
@@ -97,33 +106,61 @@ def _rebin_hist(hist, rebin: int):
         return hist
 
 
-###############################
-# rdataframe_tools.py helpers
-# (also used by plot_tools.py)
-###############################
-
-
-# Parse single or multiple background file inputs into a unique ordered list.
+# Path aggregation: Merge comma-separated and list file paths, removing duplicates
 def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] = None) -> List[str]:
+    """Resolve primary and additional path inputs to a list of file paths.
+
+    Behavior:
+    - Accepts comma-separated strings in `primary` and lists in `additional`.
+    - If an entry is a directory, expand to all `.root` files inside it.
+    - If no paths are provided or nothing resolves, default to all `.root`
+      files in the current working directory.
+    - Returns absolute, deduplicated paths preserving order.
+    """
     parsed: List[str] = []
 
+    def _add_entry(p: str):
+        p = p.strip()
+        if not p:
+            return
+        if os.path.isdir(p):
+            for f in _get_root_files(p):
+                parsed.append(os.path.abspath(os.path.join(p, f)))
+        else:
+            # treat as a file path (may or may not exist)
+            parsed.append(os.path.abspath(p))
+
+    # Primary may be a comma-separated list
     if primary:
-        parsed.extend([p.strip() for p in primary.split(",") if p.strip()])
+        parts = [s.strip() for s in str(primary).split(",") if s.strip()]
+        for part in parts:
+            _add_entry(part)
 
+    # Additional may be a list of paths/directories
     if additional:
-        parsed.extend([p.strip() for p in additional if p and p.strip()])
+        for part in additional:
+            if not part:
+                continue
+            _add_entry(part)
 
-    return list(dict.fromkeys(parsed))
+    # If nothing resolved, default to current working directory
+    if not parsed:
+        cwd = os.getcwd()
+        for f in _get_root_files(cwd):
+            parsed.append(os.path.abspath(os.path.join(cwd, f)))
+
+    # Deduplicate while preserving order
+    seen = set()
+    result: List[str] = []
+    for p in parsed:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
 
 
-# Note: Use _parse_paths directly for parsing file inputs (replaces removed
-# _parse_background_inputs and _parse_file_inputs wrappers).
-
-
+# Type conversion: Parse string/list/scalar into float array
 def _to_float_list(v):
-    # Convert string/iterable/number input into a list of floats.
-    # Accepts a comma-separated string, a list/tuple of numbers/strings, or a
-    # single numeric value. Returns an empty list for None.
     if v is None:
         return []
     if isinstance(v, str):
@@ -133,10 +170,135 @@ def _to_float_list(v):
     return [float(v)]
 
 
-# Detect vector-like branches in a TTree by examining branch classnames.
+def _to_int_list(v):
+    # Parse input (scalar, list/tuple, or CSV string) into a list of ints.
+    # Returns an empty list on invalid input.
+    if v is None:
+        return []
+    if isinstance(v, str):
+        items = [s.strip() for s in v.split(",") if s.strip()]
+    elif isinstance(v, (list, tuple)):
+        items = list(v)
+    else:
+        items = [v]
+
+    parsed: List[int] = []
+    for item in items:
+        if item is None:
+            return []
+        value = float(item)
+        if not math.isfinite(value):
+            return []
+        parsed.append(int(round(value)))
+    return parsed
+
+
+def _parse_numeric_array(values, integer: bool = False):
+    # Parse and validate numeric input into a list of numbers.
+    # `integer=True` returns rounded integers, otherwise floats.
+    parsed = _to_int_list(values) if integer else _to_float_list(values)
+    if any(not math.isfinite(value) for value in parsed):
+        raise ValueError("values must be finite numeric values")
+    return parsed
+
+
+def _normalize_parallel_arrays(reference_name: str, reference_values, series: Dict[str, object], integer_series=None):
+    # Parse and validate parallel arrays against a reference array.
+    # Optionally parse specified series as integers.
+    integer_series = set(integer_series or [])
+    reference = _parse_numeric_array(reference_values)
+    if not reference:
+        raise ValueError(f"{reference_name} must contain at least one value")
+
+    normalized = {}
+    for name, values in series.items():
+        parsed = _parse_numeric_array(values, integer=name in integer_series)
+        if len(parsed) != len(reference):
+            raise ValueError(
+                f"{name} has length {len(parsed)}, expected {len(reference)} to match {reference_name}"
+            )
+        normalized[name] = parsed
+
+    return reference, normalized
+
+
+def _default_scan_sort(series_names: List[str]) -> str:
+    # Choose a sensible default sort key from available series names.
+    preferred = [
+        "z_obs",
+        "observed_significance",
+        "significance",
+        "z_exp",
+        "expected_significance",
+        "cls",
+    ]
+    lowered = {name.lower(): name for name in series_names}
+    for candidate in preferred:
+        if candidate in lowered:
+            return lowered[candidate]
+    return series_names[0]
+
+
+def _scan_sort_descending(series_name: str) -> bool:
+    # Return True when larger series values should be considered better.
+    lowered = series_name.lower().replace("_", " ")
+    lower_better_tokens = ("cls", "p0", "p value", "p-value", "limit", "mu up", "yield up")
+    return not any(token in lowered for token in lower_better_tokens)
+
+
+def _format_scan_summary(
+    parameter_values,
+    series: Dict[str, List[float]],
+    parameter_name: str = "parameter",
+    parameter_unit: str = "",
+    sort_by: str = "",
+    top_n: int = 5,
+    descending: Optional[bool] = None,
+) -> str:
+    # Format a compact, human-readable summary of a parameter scan.
+    # Combines parameter values with series and lists top-ranked candidates.
+    if not series:
+        raise ValueError("series must contain at least one named array")
+
+    sort_field = sort_by or _default_scan_sort(list(series.keys()))
+    if sort_field not in series:
+        raise ValueError(f"sort_by='{sort_field}' is not present in series")
+
+    sort_descending = _scan_sort_descending(sort_field) if descending is None else bool(descending)
+    unit_suffix = f" {parameter_unit}" if parameter_unit else ""
+
+    records = []
+    for index, parameter_value in enumerate(parameter_values):
+        record = {parameter_name: parameter_value}
+        for series_name, series_values in series.items():
+            record[series_name] = series_values[index]
+        records.append(record)
+
+    records.sort(key=lambda record: (record[sort_field], record[parameter_name]), reverse=sort_descending)
+
+    def _format_record(record) -> str:
+        parts = [f"{parameter_name} = {record[parameter_name]:.4g}{unit_suffix}"]
+        for series_name, series_values in series.items():
+            if series_name in record:
+                parts.append(f"{series_name} = {record[series_name]:.4g}")
+        return ", ".join(parts)
+
+    lines = [f"Ranking (by {sort_field}, {'descending' if sort_descending else 'ascending'}):"]
+    lines.append(f"- Best point: {_format_record(records[0])}")
+    lines.append("- Top candidates:")
+    for record in records[:max(1, int(top_n))]:
+        lines.append(f"  - {_format_record(record)}")
+    return "\n".join(lines)
+
+
+# ============================================================================
+# VECTOR BRANCH HANDLING: Detection and RDataFrame VecOps rewriting
+# ============================================================================
+
+# Vector detection: Identify branches with std::vector type for VecOps rewriting
 def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
+    f = _open_root_file(file_path)
+    if not f:
         return []
 
     tree = f.Get(tree_name)
@@ -145,11 +307,9 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
         return []
 
     vector_branches = []
-
     for branch in tree.GetListOfBranches():
         classname = branch.GetClassName()
         name = branch.GetName()
-
         if "vector" in classname:
             vector_branches.append(name)
 
@@ -157,17 +317,21 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     return vector_branches
 
 
-# Rewrite python-like logicals and vector comparisons to RDataFrame/VecOps form.
+# Vector cut rewriting: Convert vector comparisons to ROOT::VecOps::Any/All for RDataFrame
 def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> str:
-    if mode not in ["any", "all"]:
-        return cut
-
+    # Always normalise Python boolean/logical syntax to C++ equivalents so that
+    # cuts written naturally by an LLM (True, False, and, or) are valid for
+    # RDataFrame regardless of whether vector rewriting is needed.
     cut = re.sub(r"\bTrue\b", "true", cut)
     cut = re.sub(r"\bFalse\b", "false", cut)
     cut = re.sub(r"\band\b", "&&", cut)
     cut = re.sub(r"\bor\b", "||", cut)
 
-    reducer = "Any" if mode == "any" else "All"
+    mode_lower = (mode or "any").strip().lower()
+    if mode_lower not in ["any", "all"]:
+        return cut
+
+    reducer = "Any" if mode_lower == "any" else "All"
 
     for var in vector_vars:
         pattern = rf"({var}\s*[<>!=]=?\s*[-+]?\d*\.?\d+)"
@@ -180,19 +344,18 @@ def _rewrite_vector_cut(cut: str, vector_vars: List[str], mode: str = "any") -> 
     return cut
 
 
-###############################
-# Additional rdataframe_helpers moved from rdataframe_tools.py
-###############################
+# ============================================================================
+# RDATAFRAME OPERATIONS: Lazy evaluation, event selection, yield extraction
+# ============================================================================
 
-
-# Build an RDataFrame from one or more input ROOT files.
+# Lazy evaluation: Initialize RDataFrame from tree (single or merged files)
 def _build_dataframe(tree_name: str, files: List[str]):
     if len(files) == 1:
         return ROOT.RDataFrame(tree_name, files[0])
     return ROOT.RDataFrame(tree_name, files)
 
 
-# Return True if the RDataFrame contains a column with the given name.
+# Introspection: Check if column exists in RDataFrame
 def _has_column(df, column_name: str) -> bool:
     if not column_name:
         return False
@@ -201,7 +364,7 @@ def _has_column(df, column_name: str) -> bool:
     return column_name in cols
 
 
-# Return the weighted sum or count after applying `cut` to an RDataFrame.
+# Event counting: Sum weighted events passing a selection cut
 def _filtered_yield(df, cut: str, weight: Optional[str] = None):
     filtered = df.Filter(cut)
     if weight and _has_column(filtered, weight):
@@ -209,26 +372,20 @@ def _filtered_yield(df, cut: str, weight: Optional[str] = None):
     return filtered.Count().GetValue()
 
 
-# Return total yield from an RDataFrame, using `weight` if present.
+# Total yield: Sum all events (weighted or unweighted)
 def _total_yield(df, weight: Optional[str] = None):
     if weight and _has_column(df, weight):
         return df.Sum(weight).GetValue()
     return df.Count().GetValue()
 
 
-###############################
-# plot_tools.py helpers
-# (also used by fit_tools.py and rdataframe_tools.py)
-###############################
-
-
-# Produce a short unique canvas name using an internal counter.
+# Plotting utility: Generate unique canvas identifier
 def _unique_canvas_name(base: str) -> str:
     _canvas_counter[0] += 1
     return f"{base}_{_canvas_counter[0]}"
 
 
-# Apply a list of cuts to an RDataFrame, rewriting vector comparisons safely.
+# Event selection: Apply ordered physics cuts (auto-rewrites vector expressions)
 def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], vector_mode: str):
     if not cuts:
         return df
@@ -243,18 +400,23 @@ def _apply_cuts(df, file_path: str, tree_name: str, cuts: Optional[List[str]], v
     return df
 
 
-# Return the weight branch name if it exists in the dataframe, else empty string.
+# Weight validation: Ensure weight branch exists in dataframe
 def _resolve_weight_branch(df, weight_branch: str) -> str:
     if not weight_branch:
         return ""
     return weight_branch if _has_column(df, weight_branch) else ""
 
 
-# Load a TH1 and optionally rebin it; returns (hist, None) or (None, error_message).
+# ============================================================================
+# HISTOGRAM I/O & BUILDING: Load, create, and manipulate histograms
+# ============================================================================
+
+# Histogram I/O: Load stored histogram from ROOT file
 def _load_hist(file_path: str, hist_name: str, rebin: int):
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
+    f = _open_root_file(file_path)
+    if not f:
         return None, f"Error: could not open file {file_path}."
+
     h = f.Get(hist_name)
     if not h:
         f.Close()
@@ -266,7 +428,7 @@ def _load_hist(file_path: str, hist_name: str, rebin: int):
     return h, None
 
 
-# Build a TH1 from a TTree using RDataFrame, applying optional cuts and weights.
+# Histogram creation: Build 1D histogram from tree variable with cuts and weights
 def _build_tree_hist(
     file_path: str,
     tree_name: str,
@@ -277,11 +439,18 @@ def _build_tree_hist(
     hist_name: str,
     weight_branch: str = "",
     cuts: Optional[List[str]] = None,
-    vector_mode: str = "all",
+    vector_mode: str = "any",
     rebin: int = 1,
+    apply_cuts_before_plot: bool = True,
 ):
-    df = ROOT.RDataFrame(tree_name, file_path)
-    df = _apply_cuts(df, file_path, tree_name, cuts, vector_mode)
+    files = _parse_paths(file_path)
+    if not files:
+        raise RuntimeError("No ROOT files found to build histogram.")
+
+    df = _build_dataframe(tree_name, files)
+    if apply_cuts_before_plot:
+        # use the first file as a representative for vector-branch discovery
+        df = _apply_cuts(df, files[0], tree_name, cuts, vector_mode)
 
     resolved_weight = _resolve_weight_branch(df, weight_branch)
     if resolved_weight:
@@ -298,45 +467,13 @@ def _build_tree_hist(
     return h
 
 
-# Build and return a TH1 for `variable` from a TTree (used by rdataframe_tools)
-def _tree_variable_to_histogram(
-    file_path: str,
-    tree_name: str,
-    variable: str,
-    bins: int,
-    xmin: float,
-    xmax: float,
-    cuts: Optional[List[str]] = None,
-    vector_mode: str = "all",
-    weight: Optional[str] = None,
-):
-    df = ROOT.RDataFrame(tree_name, file_path)
-
-    if cuts:
-        vector_vars = _get_vector_branches(file_path, tree_name)
-        for cut in cuts:
-            safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
-            df = df.Filter(safe_cut)
-
-    if weight and _has_column(df, weight):
-        wname = weight
-    else:
-        wname = "__rooagent_unit_weight"
-        df = df.Define(wname, "1.0")
-
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    hist_name = f"h_{stem}_{variable}"
-    hist_ptr = df.Histo1D((hist_name, hist_name, int(bins), float(xmin), float(xmax)), variable, wname)
-    h = hist_ptr.GetValue()
-    try:
-        h.SetDirectory(0)
-        ROOT.SetOwnership(h, False)
-    except Exception:
-        pass
-    return h
 
 
-# Create a canvas and optional upper/lower pads for plotting ratio panels.
+# ============================================================================
+# PLOTTING INFRASTRUCTURE: Canvas setup, styling, overlay mechanics
+# ============================================================================
+
+# Plotting canvas: Setup upper plot + optional lower ratio pad
 def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
     canvas = ROOT.TCanvas(canvas_name, canvas_title, 900, 800 if show_ratio else 700)
     if not show_ratio:
@@ -355,7 +492,7 @@ def _create_plot_pads(canvas_name: str, canvas_title: str, show_ratio: bool):
     return canvas, upper_pad, lower_pad
 
 
-# Apply styling to a ratio histogram for clear axis sizing and limits.
+# Ratio styling: Format ratio histogram axes and range for data/MC or S/B
 def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
     ratio_hist.SetTitle("")
     ratio_hist.GetXaxis().SetTitle(x_title)
@@ -371,7 +508,7 @@ def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
     ratio_hist.SetMaximum(2.0)
 
 
-# Build ratio histograms of each histogram relative to the first one.
+# Ratio histograms: Compute histogram ratios (each hist divided by first)
 def _build_reference_ratio_hists(hist_list: List):
     if len(hist_list) < 2:
         return []
@@ -388,7 +525,7 @@ def _build_reference_ratio_hists(hist_list: List):
     return ratio_hists
 
 
-# Build a signal / summed-background ratio histogram from signal and backgrounds.
+# Signal-background ratio: Divide signal by summed backgrounds
 def _build_signal_background_ratio(signal_hist, background_hists: List):
     if signal_hist is None or not background_hists:
         return None
@@ -407,7 +544,7 @@ def _build_signal_background_ratio(signal_hist, background_hists: List):
     return ratio
 
 
-# Draw the lower ratio panel using reference ratio histograms.
+# Ratio panel: Draw ratio histograms in lower pad with reference line
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
     if lower_pad is None:
         return
@@ -430,7 +567,7 @@ def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
     unity.Draw()
 
 
-# Draw multiple histograms on a canvas with legend and optional ratio panel.
+# Overlay plot: Draw multiple histograms on same axes with optional ratio pad
 def _draw_overlay_plot(
     hist_list: List,
     legend,
@@ -500,11 +637,11 @@ def _draw_overlay_plot(
     return output_pdf
 
 
-# The following plotting helper wrappers were moved from plot_tools.py so
-# that only @tool-decorated entry points remain in plot_tools.  These
-# functions are plain helpers (not LangChain tools) and belong in utils.
+# ============================================================================
+# 1D PLOTTING: Histograms, trees, comparisons, signal vs background
+# ============================================================================
 
-
+# 1D histogram plot: Visualize stored histogram with optional normalization
 def _plot_hist(
     file_path: str,
     hist_name: str,
@@ -545,6 +682,7 @@ def _plot_hist(
     return f"Saved 1D histogram {hist_name} to {output_pdf}"
 
 
+# Tree variable plot: Visualize tree branch with cuts and weights
 def _plot_tree(
     file_path: str,
     tree_name: str,
@@ -558,6 +696,7 @@ def _plot_tree(
     cuts: Optional[List[str]],
     rebin: int,
     vector_mode: str,
+    apply_cuts_before_plot: bool = True,
 ):
     h = _build_tree_hist(
         file_path=file_path,
@@ -571,6 +710,7 @@ def _plot_tree(
         cuts=cuts,
         vector_mode=vector_mode,
         rebin=rebin,
+        apply_cuts_before_plot=apply_cuts_before_plot,
     )
 
     if normalize and h.Integral() > 0:
@@ -598,6 +738,7 @@ def _plot_tree(
     return f"Saved plot to {output_pdf}"
 
 
+# Overlaid tree comparison: Plot same variable from multiple files with ratio
 def _plot_tree_compare(
     file_paths: List[str],
     tree_name: str,
@@ -613,6 +754,7 @@ def _plot_tree_compare(
     weight_branch: str,
     cuts: Optional[List[str]],
     vector_mode: str,
+    apply_cuts_before_plot: bool = True,
 ):
     if not (len(file_paths) == len(variables) == len(legends)):
         return "Error: file_paths, variables, and legends must have the same length."
@@ -634,6 +776,7 @@ def _plot_tree_compare(
             cuts=cuts,
             vector_mode=vector_mode,
             rebin=rebin,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
 
         if normalize and h.Integral() > 0:
@@ -661,6 +804,7 @@ def _plot_tree_compare(
     return f"Saved comparison histogram to {output_pdf}"
 
 
+# Overlaid histogram comparison: Plot stored histograms from multiple files
 def _plot_hist_compare(
     file_paths: List[str],
     hist_names: List[str],
@@ -725,6 +869,7 @@ def _plot_hist_compare(
     return msg
 
 
+# Signal-background visualization: Overlay signal+background+optional data with S/B ratio panel
 def _plot_signal_vs_backgrounds(
     signal_file: str,
     signal_files: Optional[List[str]],
@@ -747,11 +892,8 @@ def _plot_signal_vs_backgrounds(
     weight_branch: str,
     cuts: Optional[List[str]],
     vector_mode: str,
-    apply_cuts_before_plot: bool,
+    apply_cuts_before_plot: bool = True,
 ):
-    if apply_cuts_before_plot and not cuts:
-        return "Error: apply_cuts_before_plot=True but no 'cuts' provided. Please provide a non-empty cuts list."
-
     signal_paths = _parse_paths(signal_file, signal_files)
     if not signal_paths:
         return "Error: at least one signal file must be provided via signal_file or signal_files."
@@ -779,8 +921,6 @@ def _plot_signal_vs_backgrounds(
     if wants_data and not data_file.strip():
         return "Error: data_file must be provided when plot_data is True."
 
-    effective_cuts = cuts if apply_cuts_before_plot else None
-
     signal_hists = []
     background_hists = []
 
@@ -805,9 +945,10 @@ def _plot_signal_vs_backgrounds(
             xmax=xmax,
             hist_name=f"h_sigbkg_bkg_{i}",
             weight_branch=weight_branch,
-            cuts=effective_cuts,
+            cuts=cuts,
             vector_mode=vector_mode,
             rebin=rebin,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
         h.SetFillColor(background_fill_colors[i % len(background_fill_colors)])
         h.SetLineColor(ROOT.kBlack)
@@ -824,9 +965,10 @@ def _plot_signal_vs_backgrounds(
             xmax=xmax,
             hist_name=f"h_sigbkg_sig_{i}",
             weight_branch=weight_branch,
-            cuts=effective_cuts,
+            cuts=cuts,
             vector_mode=vector_mode,
             rebin=rebin,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
         line_color = signal_line_colors[i % len(signal_line_colors)]
         h.SetFillStyle(0)
@@ -846,9 +988,10 @@ def _plot_signal_vs_backgrounds(
             xmax=xmax,
             hist_name="h_sigbkg_data",
             weight_branch="",
-            cuts=effective_cuts,
+            cuts=cuts,
             vector_mode=vector_mode,
             rebin=rebin,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
         data_hist.SetFillStyle(0)
         data_hist.SetMarkerStyle(20)
@@ -1025,6 +1168,11 @@ def _plot_signal_vs_backgrounds(
     return f"Saved signal-vs-background comparison to {output_pdf}"
 
 
+# ============================================================================
+# 2D PLOTTING: 2D histograms and kinematic correlations
+# ============================================================================
+
+# 2D histogram plot: Visualize stored 2D histogram with color palette
 def _plot_2d_hist(
     file_path: str,
     hist_name: str,
@@ -1076,6 +1224,7 @@ def _plot_2d_hist(
     return f"Saved 2D histogram to {output_pdf}"
 
 
+# 2D scatter plot: Visualize kinematic correlations from tree branches
 def _plot_2d_tree(
     file_path: str,
     tree_name: str,
@@ -1091,29 +1240,89 @@ def _plot_2d_tree(
     xlabel: str,
     ylabel: str,
     color_palette: int,
+    normalize: bool = False,
+    rebin_x: int = 1,
+    rebin_y: int = 1,
+    weight_branch: str = "",
+    cuts: Optional[List[str]] = None,
+    vector_mode: str = "any",
+    apply_cuts_before_plot: bool = True,
 ):
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
-        return f"Error: Could not open file {file_path}"
+    # Prefer RDataFrame->Histo2D so we can apply cuts and weights consistently.
+    try:
+        df = ROOT.RDataFrame(tree_name, file_path)
+    except Exception:
+        # Fallback to TTree::Draw if RDataFrame not available
+        df = None
 
-    tree = f.Get(tree_name)
-    if not tree:
+    h2 = None
+    if df is not None:
+        # Apply cuts via RDataFrame filters if requested
+        if apply_cuts_before_plot:
+            df = _apply_cuts(df, file_path, tree_name, cuts, vector_mode)
+
+        resolved_weight = _resolve_weight_branch(df, weight_branch)
+        if resolved_weight:
+            wname = resolved_weight
+        else:
+            wname = "__rooagent_unit_weight_2d"
+            df = df.Define(wname, "1.0")
+
+        try:
+            hist_ptr = df.Histo2D(( _unique_canvas_name("h2"), "", bins_x, xmin, xmax, bins_y, ymin, ymax), x_branch, y_branch, wname)
+            h2 = hist_ptr.GetValue()
+        except Exception:
+            h2 = None
+
+    if h2 is None:
+        # Fallback: use TTree.Draw with an optional selection string
+        f = ROOT.TFile.Open(file_path)
+        if not f or f.IsZombie():
+            return f"Error: Could not open file {file_path}"
+
+        tree = f.Get(tree_name)
+        if not tree:
+            f.Close()
+            return f"Error: TTree {tree_name} not found in {file_path}"
+
+        h2 = ROOT.TH2F(_unique_canvas_name("h2"), "", bins_x, xmin, xmax, bins_y, ymin, ymax)
+        ROOT.SetOwnership(h2, False)
+
+        sel = ""
+        if apply_cuts_before_plot and cuts:
+            try:
+                vector_vars = _get_vector_branches(file_path, tree_name)
+            except Exception:
+                vector_vars = []
+            sel = " && ".join([_rewrite_vector_cut(c, vector_vars, vector_mode) for c in cuts])
+
+        tree.Draw(f"{y_branch}:{x_branch} >> {h2.GetName()}", sel, "goff")
         f.Close()
-        return f"Error: TTree {tree_name} not found in {file_path}"
 
-    h2 = ROOT.TH2F(
-        _unique_canvas_name("h2"),
-        "",
-        bins_x,
-        xmin,
-        xmax,
-        bins_y,
-        ymin,
-        ymax,
-    )
     ROOT.SetOwnership(h2, False)
+    try:
+        h2.SetDirectory(0)
+    except Exception:
+        pass
 
-    tree.Draw(f"{y_branch}:{x_branch} >> {h2.GetName()}", "", "goff")
+    if rebin_x > 1:
+        try:
+            h2.RebinX(rebin_x)
+        except Exception:
+            pass
+    if rebin_y > 1:
+        try:
+            h2.RebinY(rebin_y)
+        except Exception:
+            pass
+
+    if normalize:
+        try:
+            integral = h2.Integral() if hasattr(h2, "Integral") else h2.GetSumOfWeights()
+            if integral and integral > 0:
+                h2.Scale(1.0 / integral)
+        except Exception:
+            pass
 
     canv = ROOT.TCanvas(_unique_canvas_name("c2d_tree"), "2D Histogram", 900, 700)
     h2.GetXaxis().SetTitle(xlabel if xlabel else x_branch)
@@ -1124,17 +1333,15 @@ def _plot_2d_tree(
 
     canv.Update()
     canv.SaveAs(output_pdf)
-    f.Close()
 
     return f"Saved 2D histogram ({y_branch} vs {x_branch}) to {output_pdf}"
 
 
-###############################
-# stat_tools.py helpers
-###############################
+# ============================================================================
+# HISTOGRAM RETRIEVAL & MASS WINDOWS: Load histograms and extract counts
+# ============================================================================
 
-
-# Safely retrieve a histogram from an open ROOT file and detach it from the file.
+# Histogram retrieval: Load histogram from open ROOT file
 def _get_hist(f, name: str):
     if not f:
         return None
@@ -1149,8 +1356,7 @@ def _get_hist(f, name: str):
     return h
 
 
-# Minimal counting: use the provided single `file_path` and explicit
-# histogram names. Upstream stages are expected to validate inputs.
+# Counting window: Extract signal/background counts in mass window from file
 def _counting_window_inputs(
     file_path: str,
     bkg_name: str,
@@ -1179,187 +1385,84 @@ def _counting_window_inputs(
     if hbkg is None or hsig is None:
         return None, "Error: required histograms not found in file."
 
+    # Auto-detect histogram range if center/window not provided
+    if center is None or window is None:
+        ax = hbkg.GetXaxis()
+        xmin = ax.GetXmin()
+        xmax = ax.GetXmax()
+        center = (xmin + xmax) / 2.0
+        window = (xmax - xmin) / 2.0
+
     n_bkg = _fractional_integral(hbkg, center, window)
     n_sig = _fractional_integral(hsig, center, window)
     n_obs = None
     if hdata is not None:
         n_obs = max(0, int(round(_fractional_integral(hdata, center, window))))
 
-    return {"n_bkg": n_bkg, "n_sig": n_sig, "n_obs": n_obs}, None
+    return {"n_bkg": n_bkg, "n_sig": n_sig, "n_obs": n_obs, "center": center, "window": window}, None
 
 
-# RooStats NumberCountingUtils is unstable at exactly zero uncertainty.
-_ROOSTATS_FRACTIONAL_B_UNCERTAINTY = 1e-4
 
 
-# Create unique names for RooFit/RooStats objects.
-def _next_roostats_tag() -> str:
-    _roostats_counter[0] += 1
-    return f"{_roostats_counter[0]}"
 
+# ============================================================================
+# COUNTING-STATISTICS UTILITIES: CLs and significance helpers
+# ============================================================================
 
-# Keep probabilities in the physical range.
-def _roostats_clip_probability(value: float) -> float:
+# Probability clipping: Ensure probability is in valid [0,1] range
+def _clip_probability(value: float) -> float:
     if not math.isfinite(value):
         return 0.0
     return max(0.0, min(1.0, float(value)))
 
 
-# Map expected background to a stable NumberCountingUtils uncertainty input.
-def _roostats_fractional_b_uncertainty(mean: float) -> float:
-    if mean <= 0.0:
-        return 0.0
-    return _ROOSTATS_FRACTIONAL_B_UNCERTAINTY
+def _poisson_cdf_leq(n: int, mu: float) -> float:
+    n_val = max(0, int(n))
+    mu_val = max(0.0, float(mu))
+    return _clip_probability(float(poisson.cdf(n_val, mu_val)))
 
 
-# Build a one-channel counting model for RooStats asymptotic tools.
-def _build_roostats_counting_model(n_obs: int, n_bkg: float, n_sig: float):
-    n_obs_val = max(0, int(n_obs))
-    n_bkg_val = max(0.0, float(n_bkg))
-    n_sig_val = max(0.0, float(n_sig))
+def _counting_cls_poisson_fallback(n_obs: int, n_bkg: float, n_sig: float):
+    # Use left-tail (<= n_obs) Poisson CDF for counting CLs.
+    # Returns (CLs, CLs+b, CLb)
+    clb = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg)))
+    clspb = _poisson_cdf_leq(n_obs, max(0.0, float(n_bkg) + float(n_sig)))
 
-    tag = _next_roostats_tag()
-    ws = ROOT.RooWorkspace(f"ws_stat_{tag}")
-
-    max_obs = max(
-        float(n_obs_val) + 10.0 * math.sqrt(max(float(n_obs_val), 1.0)) + 20.0,
-        n_bkg_val + n_sig_val + 20.0,
-        50.0,
-    )
-
-    ws.factory(f"nobs_{tag}[{float(n_obs_val):.12g},0,{max_obs:.12g}]")
-    ws.factory(f"bexp_{tag}[{n_bkg_val:.12g}]")
-    ws.factory(f"sexp_{tag}[{n_sig_val:.12g}]")
-    ws.factory(f"mu_{tag}[1,0,10000]")
-    ws.factory(f"prod::sigterm_{tag}(mu_{tag},sexp_{tag})")
-    ws.factory(f"sum::mean_{tag}(sigterm_{tag},bexp_{tag})")
-    ws.factory(f"Poisson::model_{tag}(nobs_{tag},mean_{tag})")
-
-    nobs_var = ws.var(f"nobs_{tag}")
-    bexp_var = ws.var(f"bexp_{tag}")
-    sexp_var = ws.var(f"sexp_{tag}")
-    mu_var = ws.var(f"mu_{tag}")
-    model_pdf = ws.pdf(f"model_{tag}")
-
-    bexp_var.setConstant(True)
-    sexp_var.setConstant(True)
-
-    observables = ROOT.RooArgSet(nobs_var)
-    poi = ROOT.RooArgSet(mu_var)
-
-    data = ROOT.RooDataSet(f"data_{tag}", f"data_{tag}", observables)
-    nobs_var.setVal(float(n_obs_val))
-    data.add(observables)
-
-    sb_model = ROOT.RooStats.ModelConfig(f"sb_{tag}", ws)
-    sb_model.SetPdf(model_pdf)
-    sb_model.SetObservables(observables)
-    sb_model.SetParametersOfInterest(poi)
-    mu_var.setVal(1.0)
-    sb_snapshot = ROOT.RooArgSet(mu_var)
-    sb_model.SetSnapshot(sb_snapshot)
-
-    b_model = ROOT.RooStats.ModelConfig(f"b_{tag}", ws)
-    b_model.SetPdf(model_pdf)
-    b_model.SetObservables(observables)
-    b_model.SetParametersOfInterest(poi)
-    mu_var.setVal(0.0)
-    b_snapshot = ROOT.RooArgSet(mu_var)
-    b_model.SetSnapshot(b_snapshot)
-
-    mu_var.setVal(1.0)
-    return {
-        "workspace": ws,
-        "data": data,
-        "mu_var": mu_var,
-        "sb_model": sb_model,
-        "b_model": b_model,
-    }
+    cls = float("inf") if clb <= 0.0 else (clspb / clb)
+    return _clip_probability(cls), _clip_probability(clspb), _clip_probability(clb)
 
 
-# Get a RooStats HypoTestResult with explicit null/alternate ordering.
-def _roostats_hypotest_result(n_obs: int, n_bkg: float, n_sig: float, null_is_sb: bool):
-    try:
-        model = _build_roostats_counting_model(n_obs, n_bkg, n_sig)
-        null_model = model["sb_model"] if null_is_sb else model["b_model"]
-        alt_model = model["b_model"] if null_is_sb else model["sb_model"]
+def _exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
+    """Pure-Python CLs summary for counting experiments.
 
-        calculator = ROOT.RooStats.AsymptoticCalculator(model["data"], alt_model, null_model)
-        calculator.SetOneSided(True)
-        calculator.SetQTilde(True)
-        return calculator.GetHypoTest()
-    except Exception:
-        return None
+    Returns (CLs, CLs+b, CLb) computed from Poisson CDFs using the left-tail
+    convention (<= n_obs).
+    """
+    return _counting_cls_poisson_fallback(n_obs, n_bkg, n_sig)
 
 
-# Compute CLs, CLs+b, CLb using RooStats exclusion convention (null = s+b).
-def _roostats_exclusion_summary(n_obs: int, n_bkg: float, n_sig: float):
-    result = _roostats_hypotest_result(n_obs, n_bkg, n_sig, null_is_sb=True)
-    if result is None:
-        return float("nan"), float("nan"), float("nan")
-
-    clspb = _roostats_clip_probability(float(result.CLsplusb()))
-    clb = _roostats_clip_probability(float(result.CLb()))
-    cls = float(result.CLs())
-    if not math.isfinite(cls):
-        cls = clspb / clb if clb > 0.0 else float("inf")
-    return cls, clspb, clb
-
-
-# Compute mu upper limit at confidence level cl using RooStats HypoTestInverter.
-def _roostats_upper_limit(
+# Upper limit: Compute mu_up at CL using CLs criterion (exclusion boundary)
+def _upper_limit(
     n_obs: int,
     n_bkg: float,
     n_sig_nominal: float,
     cl: float = 0.95,
 ) -> float:
+    """Upper limit on signal-strength `mu` using pure-Python counting CLs.
+
+    Uses a bisection over the counting CLs definition implemented in
+    `_upper_limit_poisson_fallback`.
+    """
     if n_sig_nominal <= 0.0:
         return float("inf")
-
-    try:
-        model = _build_roostats_counting_model(n_obs, n_bkg, n_sig_nominal)
-        mu_var = model["mu_var"]
-        calculator = ROOT.RooStats.AsymptoticCalculator(
-            model["data"], model["b_model"], model["sb_model"]
-        )
-        calculator.SetOneSided(True)
-        calculator.SetQTilde(True)
-
-        mu_scan_max = max(
-            5.0,
-            (
-                max(float(n_obs), float(n_bkg) + 5.0 * math.sqrt(max(float(n_bkg), 1.0)))
-                - float(n_bkg)
-            )
-            / max(float(n_sig_nominal), 1e-9)
-            + 5.0,
-        )
-
-        for _ in range(8):
-            mu_var.setRange(0.0, max(10.0, mu_scan_max * 2.0))
-
-            inverter = ROOT.RooStats.HypoTestInverter(calculator, mu_var, 1.0 - float(cl))
-            inverter.SetConfidenceLevel(float(cl))
-            inverter.UseCLs(True)
-            inverter.SetVerbose(0)
-            inverter.RunFixedScan(120, 0.0, float(mu_scan_max))
-
-            interval = inverter.GetInterval()
-            if interval is not None:
-                mu_up = float(interval.UpperLimit())
-                if math.isfinite(mu_up) and mu_up < 0.98 * mu_scan_max:
-                    return mu_up
-
-            mu_scan_max *= 2.0
-            if mu_scan_max > 1e6:
-                break
-    except Exception:
-        return float("inf")
-
-    return float("inf")
+    return _upper_limit_poisson_fallback(n_obs, n_bkg, n_sig_nominal, cl=cl)
 
 
-# Compute the fractional integral of `hist` over [center-window, center+window], handling partial bins.
+# ============================================================================
+# STATISTICAL CALCULATIONS: Significance, limits, and p-values
+# ============================================================================
+
+# Mass window counting: Integrate histogram over fractional bins in window
 def _fractional_integral(hist, center: float, window: float) -> float:
     xlow = center - window
     xhigh = center + window
@@ -1378,88 +1481,141 @@ def _fractional_integral(hist, center: float, window: float) -> float:
     return total
 
 
-# Convert an upper-tail p-value to a one-sided discovery Z (Z >= 0).
+def _poisson_sf_geq(n: int, mu: float) -> float:
+    # Survival function P(N >= n) = 1 - CDF(n-1)
+    n_val = max(0, int(n))
+    mu_val = max(0.0, float(mu))
+    if n_val <= 0:
+        return 1.0
+    return _clip_probability(float(poisson.sf(n_val - 1, mu_val)))
+
+
+# P-value to Z: Convert p-value to Gaussian discovery significance
 def _significance_from_pvalue(pvalue: float) -> float:
-    pvalue_val = _roostats_clip_probability(float(pvalue))
+    pvalue_val = _clip_probability(float(pvalue))
     if not (0.0 < pvalue_val < 1.0):
         return 0.0
     try:
-        z_value = float(ROOT.RooStats.PValueToSignificance(pvalue_val))
-        if not math.isfinite(z_value):
-            return 0.0
-        return max(0.0, z_value)
+        return max(0.0, float(norm.isf(pvalue_val)))
     except Exception:
         return 0.0
 
 
-# Note: profile-likelihood extraction was removed; convert p-values to
-# discovery significance using the canonical `_significance_from_pvalue`.
-
-
-# Asymptotic (Cowan) significance for expected S+B vs B yields.
-# Valid when B >> ~10 and no background uncertainty is modelled.
-# Use for expected sensitivity estimates and discovery reach projections.
-def _asymptotic_significance(n_sig: float, n_bkg: float) -> float:
-    try:
-        s = float(n_sig)
-        b = float(n_bkg)
-        if b <= 0.0:
-            return float("nan")
-        return max(0.0, float(ROOT.RooStats.AsimovSignificance(s, b, 0.0)))
-    except Exception:
-        return float("nan")
-
-
-# RooStats number-counting expected significance from S and B.
-def _number_counting_expected_significance(n_sig: float, n_bkg: float) -> float:
-    try:
-        s = max(0.0, float(n_sig))
-        b = max(0.0, float(n_bkg))
-        if b <= 0.0:
-            return float("nan")
-        rel_unc = _roostats_fractional_b_uncertainty(b)
-        z_value = float(ROOT.RooStats.NumberCountingUtils.BinomialExpZ(s, b, rel_unc))
-        if not math.isfinite(z_value):
-            return float("nan")
-        return max(0.0, z_value)
-    except Exception:
-        return float("nan")
-
-
-#Compute discovery significance from expected signal S and background B yields.
-def _compute_significance_from_yields(S: float, B: float, method: str = "simple") -> float:
-
+# Statistical test significance: p-value inversion (fast counting approximation)
+def _compute_significance_from_yields(S: float, B: float) -> float:
     s = float(S)
     b = float(B)
-    if method == "asymptotic":
-        return _asymptotic_significance(s, b)
-    # default: RooStats number-counting expected significance
-    if b <= 0.0:
+    if s <= 0.0 and b <= 0.0:
         return float("nan")
-    return _number_counting_expected_significance(s, b)
+    if b <= 0.0:
+        return float("inf") if s > 0.0 else float("nan")
+
+    # Use Asimov observed count n = round(S+B) against background-only hypothesis.
+    n_obs = max(0, int(round(s + b)))
+    p0 = _poisson_sf_geq(n_obs, b)
+    return _significance_from_pvalue(p0)
 
 
-# Return compact p0 / Z / CLs summary string: always expected (S+B Asimov), observed if n_obs given.
+# Cut-optimization significance: S/sqrt(S+B)
+def _optimal_cut_significance(S: float, B: float) -> float:
+    s = max(0.0, float(S))
+    b = max(0.0, float(B))
+    denom = s + b
+    if denom <= 0.0:
+        return 0.0
+    return s / math.sqrt(denom)
+
+
+# Upper-limit: find mu such that CLs(mu) = alpha via direct gamma-quantile inversion
+def _upper_limit_poisson_fallback(n_obs: int, n_bkg: float, n_sig_nominal: float, cl: float = 0.95) -> float:
+
+    if n_sig_nominal <= 0.0:
+        return float("inf")
+
+    alpha = 1.0 - float(cl)
+    n = max(0, int(n_obs))
+
+    # CLb = P(N <= n | bkg-only) — constant denominator for CLs
+    clb = float(poisson.cdf(n, max(0.0, float(n_bkg))))
+    if clb <= 0.0:
+        return float("inf")
+
+    # CLs(mu) = alpha  <=>  poisson.cdf(n, mu*n_sig + n_bkg) = alpha * CLb
+    # poisson.cdf(n, λ) = gammaincc(n+1, λ), so invert directly:
+    #   λ_up = gammainccinv(n+1, target)
+    target = alpha * clb
+    if not (0.0 < target < 1.0):
+        return float("inf")
+
+    lambda_up = float(gammainccinv(float(n + 1), target))
+    mu_up = (lambda_up - float(n_bkg)) / float(n_sig_nominal)
+    return max(0.0, mu_up)
+
+
+# Compute a full set of counting-statistics metrics (p0/Z, CLs, mu_up)
+def _compute_counting_stats(n_obs: Optional[int], n_bkg: float, n_sig: float, cl: float = 0.95):
+    n_b = max(0.0, float(n_bkg))
+    n_s = max(0.0, float(n_sig))
+
+    # Observed-like line (use n_obs if provided, else use Asimov expected)
+    if n_obs is None:
+        n_obs_for_observed = max(0, int(round(n_b + n_s)))
+    else:
+        n_obs_for_observed = max(0, int(n_obs))
+    # Observed discovery p0/Z (pure-Python counting)
+    p0_obs = _poisson_sf_geq(n_obs_for_observed, n_b)
+    z_obs = _significance_from_pvalue(p0_obs)
+
+    # Expected (Asimov) discovery via p-value inversion
+    n_exp = max(0, int(round(n_b + n_s)))
+    p0_exp = _poisson_sf_geq(n_exp, n_b)
+    z_exp = _significance_from_pvalue(p0_exp)
+
+    # Exclusion (CLs)
+    n_for_exclusion = n_obs_for_observed
+    cls, clspb, clb = _exclusion_summary(n_for_exclusion, n_b, n_s)
+
+    # Upper limit on mu
+    mu_up = float("inf")
+    try:
+        mu_up = _upper_limit(n_for_exclusion, n_b, n_s, cl=cl)
+        if not (math.isfinite(mu_up) and mu_up < float("inf")):
+            mu_up = _upper_limit_poisson_fallback(n_for_exclusion, n_b, n_s, cl=cl)
+    except Exception:
+        mu_up = _upper_limit_poisson_fallback(n_for_exclusion, n_b, n_s, cl=cl)
+
+    return {
+        "p0_obs": p0_obs,
+        "z_obs": z_obs,
+        "p0_exp": p0_exp,
+        "z_exp": z_exp,
+        "CLs": cls,
+        "CLs+b": clspb,
+        "CLb": clb,
+        "mu_up": mu_up,
+    }
+
+
+# Summary: format expected and observed p0/Z/CLs for display
 def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None) -> str:
     n_bkg_val = max(0.0, float(n_bkg))
     n_sig_val = max(0.0, float(n_sig))
-    rel_bkg_unc = _roostats_fractional_b_uncertainty(n_bkg_val)
 
     def _line(n: int) -> str:
         n_val = max(0, int(n))
-        p0 = _roostats_clip_probability(
-            float(
-                ROOT.RooStats.NumberCountingUtils.BinomialObsP(
-                    float(n_val), n_bkg_val, rel_bkg_unc
-                )
-            )
-        )
-        # Convert the p-value to a one-sided discovery Z using the
-        # canonical `_significance_from_pvalue` converter.
-        z = _significance_from_pvalue(p0)
-        cls, clspb, clb = _roostats_exclusion_summary(n_val, n_bkg_val, n_sig_val)
+        stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val)
+        p0 = stats.get("p0_obs", float("nan"))
+        z = stats.get("z_obs", float("nan"))
+        cls = stats.get("CLs", float("nan"))
+        clspb = stats.get("CLs+b", float("nan"))
+        clb = stats.get("CLb", float("nan"))
+        # Report the one-sided discovery significance (non-negative).
+        # Negative signs for deficits are intentionally suppressed so the
+        # reported Z is always >= 0. This mirrors the behavior of
+        # `_significance_from_pvalue` which clips to 0.
+        z_str = f"{z:.4g}sigma"
         return (
-            f"N={n_val}  p0={p0:.4g}  Z={z:.4g}sigma  "
+            f"N={n_val}  p0={p0:.4g}  Z={z_str}  "
             f"CLs={cls:.4g}  CLs+b={clspb:.4g}  CLb={clb:.4g}"
         )
 

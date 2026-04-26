@@ -1,7 +1,6 @@
 from typing import List, Dict, Optional
 import ROOT
 import os
-import math
 from langchain_core.tools import tool
 from .utils import (
     _parse_paths,
@@ -9,11 +8,12 @@ from .utils import (
     _get_vector_branches,
     _rewrite_vector_cut,
     _build_dataframe,
-    _tree_variable_to_histogram,
+    _build_tree_hist,
     _has_column,
     _filtered_yield,
     _total_yield,
     _compute_significance_from_yields,
+    _optimal_cut_significance,
 )
 
 
@@ -26,39 +26,77 @@ def root_tree_to_histogram(
     xmin: float,
     xmax: float,
     cuts: Optional[List[str]] = None,
-    vector_mode: str = "all",
+    vector_mode: str = "any",
     weight: Optional[str] = None,
     output_root: Optional[str] = None,
     hist_name: Optional[str] = None,
 ) -> str:
-    """Convert a numeric tree variable into a 1D TH1 and save to a ROOT file.
-    Output defaults to `<input>_<variable>_hist.root` if not specified. Supports optional cuts and weights.
-    """
-    h = _tree_variable_to_histogram(file_path, tree_name, variable, bins, xmin, xmax, cuts, vector_mode, weight)
+    """Build a 1D histogram from a TTree branch and save it to a ROOT file.
 
-    chosen_name = hist_name if hist_name else h.GetName()
+    Args:
+        file_path (str): Input ROOT file containing the TTree.
+        tree_name (str): Name of the TTree to read.
+        variable (str): Branch name to histogram.
+        bins (int): Number of bins for the histogram.
+        xmin (float): Lower x-axis bound.
+        xmax (float): Upper x-axis bound.
+        cuts (List[str], optional): C++-style selection expressions to filter events.
+        vector_mode (str, optional): How to handle vector branches ('any' or 'all').
+        weight (str, optional): Branch/expression to use as event weight.
+        output_root (str, optional): Output ROOT filename to save the histogram; default is derived from the input file.
+        hist_name (str, optional): Name for the created histogram.
+
+    Returns:
+        str: Confirmation message with saved histogram name and output file path, or an error message.
+    """
+    # Determine default histogram name if not provided
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    default_hist_name = f"h_{stem}_{variable}"
+    chosen_hist_name = hist_name if hist_name else default_hist_name
+
+    h = _build_tree_hist(
+        file_path=file_path,
+        tree_name=tree_name,
+        variable=variable,
+        bins=bins,
+        xmin=xmin,
+        xmax=xmax,
+        hist_name=chosen_hist_name,
+        weight_branch=weight or "",
+        cuts=cuts,
+        vector_mode=vector_mode,
+        rebin=1,
+    )
+
     if output_root is None:
         output_root = str(file_path).replace(".root", f"_{variable}_hist.root")
 
     f = ROOT.TFile.Open(output_root, "RECREATE")
-    hcopy = h.Clone(chosen_name)
+    hcopy = h.Clone(chosen_hist_name)
     hcopy.SetDirectory(f)
     f.Write()
     f.Close()
 
-    return f"Saved histogram '{chosen_name}' to {output_root}"
+    return f"Saved histogram '{chosen_hist_name}' to {output_root}"
 
 
 @tool
 def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
-                        vector_mode: str = "all",
+                        vector_mode: str = "any",
                         weight: Optional[str] = None,
                         file_paths: Optional[List[str]] = None) -> str:
-    """Apply a selection cut to one or more TTrees and return the passing yield.
+    """Count events that pass a selection cut in one or more ROOT files.
 
-    cut: C++ syntax; vector branches rewritten automatically.
-    weight: MC weight branch to sum; absent -> raw event count.
-    file_paths: extra files merged with file_path.
+    Args:
+        file_path (str): Primary ROOT file path (or empty if using `file_paths`).
+        tree_name (str): TTree name to evaluate the cut on.
+        cut (str): C++ boolean expression used to select events.
+        vector_mode (str, optional): How to rewrite vector-branch cuts ('any' or 'all').
+        weight (str, optional): Branch/expression name for event weights; if omitted, counts are unweighted.
+        file_paths (List[str], optional): List of ROOT files to process instead of a single file.
+
+    Returns:
+        str: A string in the form "yield=<value> cut='<expr>' files=<count>" or an error message.
     """
 
     paths = _parse_paths(file_path, file_paths)
@@ -80,12 +118,22 @@ def compute_significance(signal_file: str,
                          tree_name: str,
                          cut: str,
                          background_file: str = "",
-                         vector_mode: str = "all",
+                         vector_mode: str = "any",
                          weight: Optional[str] = None,
-                         background_files: Optional[List[str]] = None,
-                         method: str = "simple") -> str:
-    """Compute expected discovery significance Z for a tree variable after selection cut.
-    Supports "simple" (RooStats number-counting) or "asymptotic" (Asimov) methods. Sum all backgrounds first.
+                         background_files: Optional[List[str]] = None) -> str:
+    """Compute discovery significance Z from signal and background yields after selection.
+
+    Args:
+        signal_file (str): ROOT file containing the signal TTree.
+        tree_name (str): TTree to evaluate selection on.
+        cut (str): Selection expression (C++ syntax).
+        background_file (str, optional): Single background ROOT file.
+        background_files (List[str], optional): Multiple background ROOT files.
+        vector_mode (str, optional): How to handle vector-branch conditions ('any' or 'all').
+        weight (str, optional): Branch/expression to apply per-event weights.
+
+    Returns:
+        str: Textual result like "S=<N> B=<N> Z=<value>" or an error message.
     """
 
     vector_vars = _get_vector_branches(signal_file, tree_name)
@@ -106,8 +154,8 @@ def compute_significance(signal_file: str,
     if B <= 0:
         return f"S={S} B={B} Z=inf (no background)"
 
-    significance = _compute_significance_from_yields(S, B, method)
-    return f"S={S} B={B} Z={significance:.3f} method={method}"
+    significance = _compute_significance_from_yields(S, B)
+    return f"S={S} B={B} Z={significance:.3f}"
 
 @tool
 def define_variable(
@@ -117,9 +165,17 @@ def define_variable(
     expression: str,
     save_file: Optional[str] = None
 ) -> str:
-    """Define a new branch in a TTree via an RDataFrame expression and save.
+    """Add a derived branch to a TTree using a C++ expression and optionally save the updated tree.
 
-    save_file: output path; defaults to <input>_updated.root.
+    Args:
+        file_path (str): ROOT file containing the TTree.
+        tree_name (str): Name of the TTree to modify.
+        new_var_name (str): Name of the new derived branch to create.
+        expression (str): C++ expression describing how to compute the new branch.
+        save_file (str, optional): Path to save the updated TTree; if omitted a new file name is derived.
+
+    Returns:
+        str: Confirmation message including the new variable name and the output file path.
     """
 
     rdf = ROOT.RDataFrame(tree_name, file_path)
@@ -141,15 +197,27 @@ def define_variable_and_plot(file_path: str, tree_name: str,
                              new_variables: Dict[str, str],
                              variable_to_plot: str,
                              bins: int, xmin: float, xmax: float,
-                             cuts: List[str],
                              output_file: str,
-                             vector_mode: str = "all",
+                             cuts: Optional[List[str]] = None,
+                             vector_mode: str = "any",
                              weight: Optional[str] = None) -> str:
-    """Define new variables in a TTree, apply cuts, and save a 1D histogram.
+    """Define derived variables, apply optional cuts, and plot a single variable from the updated dataframe.
 
-    new_variables: dict of name->RDataFrame expression.
-    cuts: sequential C++ selections applied in order.
-    weight: MC weight branch for weighted fill.
+    Args:
+        file_path (str): ROOT file containing the TTree.
+        tree_name (str): Name of the TTree to read and modify.
+        new_variables (Dict[str, str]): Mapping of new variable names to C++ expressions.
+        variable_to_plot (str): Which derived or existing variable to histogram and plot.
+        bins (int): Number of bins for the histogram.
+        xmin (float): Lower x bound for the histogram.
+        xmax (float): Upper x bound for the histogram.
+        output_file (str): Path to save the plot (e.g., PDF).
+        cuts (List[str], optional): Selection expressions applied after definitions.
+        vector_mode (str, optional): How to handle vector branch expressions.
+        weight (str, optional): Branch/expression used for event weighting.
+
+    Returns:
+        str: Confirmation message with saved plot path or an error message.
     """
 
     df = ROOT.RDataFrame(tree_name, file_path)
@@ -158,7 +226,7 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     for name, expr in new_variables.items():
         df = df.Define(name, expr)
 
-    for cut in cuts:
+    for cut in (cuts or []):
         safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
         df = df.Filter(safe_cut)
 
@@ -201,19 +269,37 @@ def find_optimal_cut(signal_file: str,
                      step: float,
                      background_file: str = "",
                      base_cut: str = "",
-                     vector_mode: str = "all",
+                     vector_mode: str = "any",
                      weight: Optional[str] = None,
-                     background_files: Optional[List[str]] = None,
-                     method: str = "simple") -> str:
-    """Scan variable > cut_val and return the cut value that maximises significance.
+                     background_files: Optional[List[str]] = None) -> str:
+    """Scan threshold values on a variable to find the cut that maximizes an optimization metric.
 
-    method: "simple" (RooStats number-counting, default) or "asymptotic" (Cowan 2010, only when B>>10).
-    base_cut: extra selection AND-ed with each scanned cut.
+    Args:
+        signal_file (str): ROOT file with signal events.
+        tree_name (str): TTree name to evaluate selection on.
+        variable (str): Variable to scan (for example, mass or a classification score).
+        min_cut (float): Minimum threshold for the scan.
+        max_cut (float): Maximum threshold for the scan.
+        step (float): Step size for the scan (must be > 0).
+        background_file (str, optional): Single background ROOT file.
+        background_files (List[str], optional): Multiple background ROOT files.
+        base_cut (str, optional): Additional selection expression applied to all scans.
+        vector_mode (str, optional): How vector branches are interpreted ('any' or 'all').
+        weight (str, optional): Event weight branch/expression.
+
+    Returns:
+        str: A multi-line report describing the optimal cut, signal/background yields, and the computed significance.
+    Notes:
+        Validate that `step` > 0 and `max_cut >= min_cut` before starting the scan.
     """
 
     bkg_paths = _parse_paths(background_file, background_files)
     if not bkg_paths:
         return "Error: no background file(s) provided."
+    if step <= 0:
+        return "Error: step must be > 0."
+    if max_cut < min_cut:
+        return "Error: max_cut must be >= min_cut."
 
     sig_df = ROOT.RDataFrame(tree_name, signal_file)
     bkg_df = _build_dataframe(tree_name, bkg_paths)
@@ -243,7 +329,7 @@ def find_optimal_cut(signal_file: str,
         S = _filtered_yield(sig_df, full_cut, weight)
         B = _filtered_yield(bkg_df, full_cut, weight)
 
-        significance = _compute_significance_from_yields(S, B, method) if B > 0 else 0.0
+        significance = _optimal_cut_significance(S, B)
 
         if significance > best_sig:
             best_sig = significance
@@ -263,18 +349,27 @@ def find_optimal_cut(signal_file: str,
 
 @tool
 def generate_cutflow(
-    file_path: str,
     tree_name: str,
     cuts: List[str],
     vector_mode: str = "any",
     weight: Optional[str] = None,
-    file_paths: Optional[List[str]] = None
+    file_path: Optional[str] = None,
+    file_paths: Optional[List[str]] = None,
 ) -> str:
-    """Apply sequential cuts to a TTree and report yield after each step.
+    """Produce a cutflow table reporting yields after each sequential cut, both per-file and combined.
 
-    cuts: ordered list of C++ selections.
-    weight: MC weight branch; absent -> raw counts.
-    file_paths: additional files merged with file_path.
+    Args:
+        tree_name (str): TTree to evaluate cuts on.
+        cuts (List[str]): Ordered list of C++ selection expressions to apply.
+        vector_mode (str, optional): How to rewrite vector-branch expressions ('any' or 'all').
+        weight (str, optional): Branch/expression to use as event weight.
+        file_path (str, optional): Primary ROOT file path (or omitted if using `file_paths`).
+        file_paths (List[str], optional): List of ROOT files to process instead of a single file.
+
+    Returns:
+        str: A human-readable cutflow report with per-file sections and a merged summary.
+    Notes:
+        If a machine-readable output is desired (CSV or JSON), consider serializing the returned information to a file instead of the default human-readable format.
     """
     paths = _parse_paths(file_path, file_paths)
     if not paths:

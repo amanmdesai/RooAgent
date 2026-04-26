@@ -72,8 +72,12 @@ from rooagent.tools.plot_tools import (  # noqa: E402
     plot_2d,
     plot_significance_and_cls,
 )
-from rooagent.tools.histogram_tools import get_histogram_stats  # noqa: E402
-from rooagent.tools.stat_tools import histogram_significance_and_limits, histogram_upper_limit  # noqa: E402
+from rooagent.tools.histogram_tools import get_histogram_stats, histogram_integral  # noqa: E402
+from rooagent.tools.stat_tools import (  # noqa: E402
+    histogram_significance_and_limits,
+    histogram_upper_limit,
+    summarize_parameter_scan,
+)
 from rooagent.tools.tfile_tools import (  # noqa: E402
     inspect_root_data,
 )
@@ -83,12 +87,11 @@ from rooagent.tools.utils import (
     _get_vector_branches,
     _rewrite_vector_cut,
     _parse_paths,
-    _build_signal_background_ratio,
     _fractional_integral,
-    _roostats_fractional_b_uncertainty,
-    _number_counting_expected_significance,
+    _compute_significance_from_yields,
+    _optimal_cut_significance,
     _stat_summary,
-    _roostats_upper_limit,
+    _upper_limit,
 )  # noqa: E402
 
 TESTS_DIR = PROJECT_ROOT / "tests"
@@ -362,6 +365,38 @@ def test_histogram_stats_tool(sample_context):
     assert "Entries:" in output
 
 
+def test_histogram_integral_tool(sample_context):
+    f = ROOT.TFile.Open(sample_context["signal"])
+    h = f.Get(sample_context["hist"])
+    ax = h.GetXaxis()
+    x_low = ax.GetXmin()
+    x_high = ax.GetXmax()
+    f.Close()
+
+    output = histogram_integral.invoke(
+        {
+            "file_path": sample_context["signal"],
+            "hist_name": sample_context["hist"],
+            "x_low": x_low,
+            "x_high": x_high,
+        }
+    )
+    assert "Integral" in output
+    assert "bins=" in output
+
+
+def test_histogram_integral_invalid_range_returns_error(sample_context):
+    output = histogram_integral.invoke(
+        {
+            "file_path": sample_context["signal"],
+            "hist_name": sample_context["hist"],
+            "x_low": 1.0,
+            "x_high": 1.0,
+        }
+    )
+    assert "Error" in output
+
+
 def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
     root_file = tmp_path / "cls_input.root"
     f = ROOT.TFile.Open(str(root_file), "RECREATE")
@@ -392,6 +427,9 @@ def test_histogram_significance_and_limits_cls_uses_exclusion_tail(tmp_path):
             "window": 0.5,
         }
     )
+
+    assert "Signal=sig" in output
+    assert "Center=1.5" in output
 
     # Both expected (S+B Asimov) and observed sections must be present
     assert "Expected(S+B Asimov):" in output, output
@@ -521,6 +559,9 @@ def test_upper_limit_both_expected_and_observed_with_data(tmp_path):
             "window": 1.0,
         }
     )
+
+    assert "Signal=sig" in output
+    assert "Center=1" in output
 
     assert "Expected(B Asimov):" in output, output
     assert "Observed:" in output, output
@@ -707,6 +748,21 @@ def test_find_optimal_cut_two_backgrounds(sample_context):
     assert "Significance =" in output
 
 
+def test_find_optimal_cut_invalid_step_returns_error(sample_context):
+    output = find_optimal_cut.invoke(
+        {
+            "signal_file": sample_context["signal"],
+            "background_file": sample_context["background"],
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "min_cut": sample_context["xmin"],
+            "max_cut": sample_context["xmax"],
+            "step": 0.0,
+        }
+    )
+    assert "step must be > 0" in output
+
+
 def test_generate_cutflow_runs(sample_context):
     output = generate_cutflow.invoke(
         {
@@ -883,11 +939,17 @@ def test_plot_tools_hist_and_tree_plots(sample_context):
 def test_plot_significance_and_cls_creates_png(tmp_path):
     """Basic: generic y array produces a PNG."""
     out = tmp_path / "sig_cls.png"
-    masses = [250, 280, 265]
+    parameter_values = [250, 280, 265]
     significance = [2.43, 2.25, 2.11]
 
     result = plot_significance_and_cls.invoke(
-        {"masses": masses, "y": significance, "y_label": "Significance (Z)", "output_png": str(out)}
+        {
+            "parameter_values": parameter_values,
+            "parameter_label": "Width",
+            "y": significance,
+            "y_label": "Significance (Z)",
+            "output_png": str(out),
+        }
     )
     assert "Saved" in result
     assert out.exists()
@@ -896,13 +958,13 @@ def test_plot_significance_and_cls_creates_png(tmp_path):
 
 def test_plot_significance_and_cls_convenience_args(tmp_path):
     """Convenience kwargs significance/cls/upper_limits each produce a file."""
-    masses = [100, 200, 300, 400, 500]
+    parameter_values = [100, 200, 300, 400, 500]
     vals = [1.0, 2.0, 3.0, 1.5, 0.5]
 
     for kwarg, suffix in [("significance", "sig"), ("cls", "cls"), ("upper_limits", "ul")]:
         out = tmp_path / f"{suffix}.png"
         result = plot_significance_and_cls.invoke(
-            {"masses": masses, kwarg: vals, "output_png": str(out)}
+            {"parameter_values": parameter_values, kwarg: vals, "output_png": str(out)}
         )
         assert "Saved" in result, f"{kwarg}: {result}"
         assert out.exists()
@@ -910,10 +972,9 @@ def test_plot_significance_and_cls_convenience_args(tmp_path):
 
 def test_plot_significance_and_cls_png_and_pdf(tmp_path):
     """Both PNG and PDF are saved when output_pdf is provided."""
-    masses = [100, 200, 300]
     result = plot_significance_and_cls.invoke(
         {
-            "masses": masses,
+            "parameter_values": [100, 200, 300],
             "significance": [1.0, 2.0, 3.0],
             "output_png": str(tmp_path / "out.png"),
             "output_pdf": str(tmp_path / "out.pdf"),
@@ -923,47 +984,85 @@ def test_plot_significance_and_cls_png_and_pdf(tmp_path):
     assert (tmp_path / "out.pdf").exists()
 
 
-def test_plot_significance_and_cls_length_mismatch_truncates(tmp_path):
-    """Mismatched array lengths produce a WARNING but still save the file."""
-    out = tmp_path / "truncated.png"
+def test_plot_significance_and_cls_accepts_expected_but_plots_single_series(tmp_path):
+    """`expected` input is accepted for compatibility, but plotting remains single-series."""
+    out = tmp_path / "sig_with_expected.png"
     result = plot_significance_and_cls.invoke(
         {
-            "masses": [100, 200, 300, 400, 500],   # 5 points
-            "significance": [1.0, 2.0, 3.0],       # only 3 — simulates LLM truncation
+            "parameter_values": [100, 150, 200],
+            "significance": [1.2, 2.1, 3.4],
+            "expected": [1.0, 1.8, 2.9],
             "output_png": str(out),
         }
     )
     assert "Saved" in result
-    assert "WARNING" in result
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_significance_and_cls_ignores_expected_length_mismatch(tmp_path):
+    """Expected-series length does not affect plotting because overlays are disabled."""
+    out = tmp_path / "expected_mismatch.png"
+    result = plot_significance_and_cls.invoke(
+        {
+            "parameter_values": [100, 200, 300],
+            "y": [0.1, 0.05, 0.02],
+            "expected": [0.12, 0.06],
+            "output_png": str(out),
+        }
+    )
+    assert "Saved" in result
     assert out.exists()
 
 
-def test_plot_significance_and_cls_none_values(tmp_path):
-    """None in y-array is converted to NaN gap."""
+def test_plot_significance_and_cls_length_mismatch_returns_error(tmp_path):
+    """Mismatched array lengths are rejected to avoid parameter/value drift."""
+    out = tmp_path / "truncated.png"
+    result = plot_significance_and_cls.invoke(
+        {
+            "parameter_values": [100, 200, 300, 400, 500],
+            "significance": [1.0, 2.0, 3.0],
+            "output_png": str(out),
+        }
+    )
+    assert result == "Error: parameter_values and y-data must have the same length."
+    assert not out.exists()
+
+
+def test_plot_significance_and_cls_none_values_return_error(tmp_path):
+    """None in y-array is rejected to keep plotted scan inputs well-defined."""
     out = tmp_path / "with_none.png"
     result = plot_significance_and_cls.invoke(
         {
-            "masses": [100, 200, 300, 400, 500],
+            "parameter_values": [100, 200, 300, 400, 500],
             "significance": [1.0, None, 2.0, None, 3.0],
             "output_png": str(out),
         }
     )
-    assert "Saved" in result
-    assert out.exists()
+    assert result == "Error: parameter_values and y-data must be finite numeric values."
+    assert not out.exists()
 
 
-def test_plot_significance_and_cls_no_output_returns_error(tmp_path):
-    """Calling with neither output_png nor output_pdf returns an error string."""
-    result = plot_significance_and_cls.invoke(
-        {"masses": [100, 200], "significance": [1.0, 2.0], "output_png": "", "output_pdf": ""}
-    )
-    assert "Error" in result
+def test_plot_significance_and_cls_no_output_uses_default_name(tmp_path):
+    """Calling with neither output_png nor output_pdf saves to default PNG name."""
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        result = plot_significance_and_cls.invoke(
+            {"parameter_values": [100, 200], "significance": [1.0, 2.0], "output_png": "", "output_pdf": ""}
+        )
+        out = tmp_path / "significance_cls.png"
+        assert "Saved" in result
+        assert out.exists()
+        assert out.stat().st_size > 0
+    finally:
+        os.chdir(cwd)
 
 
 def test_plot_significance_and_cls_no_y_returns_error(tmp_path):
     """Calling with no y-data returns an error string."""
     result = plot_significance_and_cls.invoke(
-        {"masses": [100, 200], "output_png": str(tmp_path / "x.png")}
+        {"parameter_values": [100, 200], "output_png": str(tmp_path / "x.png")}
     )
     assert "Error" in result
 
@@ -1059,6 +1158,30 @@ def test_plot_signal_vs_backgrounds_creates_pdf(sample_context):
     assert output_pdf.stat().st_size > 0
 
 
+def test_plot_signal_vs_backgrounds_stack_backgrounds_only(sample_context):
+    output_pdf = _artifact_path("signal_background_stack_bkg_only.pdf")
+    output = plot.invoke(
+        {
+            "mode": "signal_background",
+            "signal_file": sample_context["signal"],
+            "background_files": [sample_context["background"]],
+            "data_file": sample_context["background2"],
+            "plot_data": True,
+            "tree_name": sample_context["tree"],
+            "variable": sample_context["variable"],
+            "bins": 20,
+            "xmin": sample_context["xmin"],
+            "xmax": sample_context["xmax"],
+            "output_pdf": str(output_pdf),
+            "normalize": False,
+            "stack_backgrounds_only": True,
+        }
+    )
+    assert "Saved signal-vs-background comparison" in output
+    assert output_pdf.exists()
+    assert output_pdf.stat().st_size > 0
+
+
 def test_plot_signal_vs_backgrounds_two_backgrounds(sample_context):
     output_pdf = _artifact_path("signal_vs_two_backgrounds_ratio.pdf")
     output = plot.invoke(
@@ -1131,55 +1254,6 @@ def test_plot_signal_vs_backgrounds_with_data_markers(sample_context):
     assert output_pdf.stat().st_size > 0
 
 
-def test_signal_background_ratio_uses_sum_of_backgrounds(sample_context):
-    signal_hist = _hist_from_tree(
-        sample_context["signal"],
-        sample_context["tree"],
-        sample_context["variable"],
-        20,
-        sample_context["xmin"],
-        sample_context["xmax"],
-    )
-    background_hist = _hist_from_tree(
-        sample_context["background"],
-        sample_context["tree"],
-        sample_context["variable"],
-        20,
-        sample_context["xmin"],
-        sample_context["xmax"],
-    )
-    background2_hist = _hist_from_tree(
-        sample_context["background2"],
-        sample_context["tree"],
-        sample_context["variable"],
-        20,
-        sample_context["xmin"],
-        sample_context["xmax"],
-    )
-
-    ratio_hist = _build_signal_background_ratio(signal_hist, [background_hist, background2_hist])
-    assert ratio_hist is not None
-
-    total_background = background_hist.Clone("total_background_for_test")
-    total_background.SetDirectory(0)
-    ROOT.SetOwnership(total_background, False)
-    total_background.Add(background2_hist)
-
-    checked_bins = 0
-    for bin_idx in range(1, ratio_hist.GetNbinsX() + 1):
-        denominator = total_background.GetBinContent(bin_idx)
-        numerator = signal_hist.GetBinContent(bin_idx)
-        if denominator <= 0:
-            continue
-
-        expected = numerator / denominator
-        actual = ratio_hist.GetBinContent(bin_idx)
-        assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12)
-        checked_bins += 1
-
-    assert checked_bins > 0
-
-
 def test_plot_signal_vs_backgrounds_label_validation(sample_context):
     output = plot.invoke(
         {
@@ -1245,7 +1319,11 @@ def test_utils_functions(sample_context):
 
 def test_plot_file_input_parser_merges_and_deduplicates():
     parsed = _parse_paths("a.root, b.root", ["b.root", "c.root", ""])
-    assert parsed == ["a.root", "b.root", "c.root"]
+    assert parsed == [
+        str((PROJECT_ROOT / "a.root").resolve()),
+        str((PROJECT_ROOT / "b.root").resolve()),
+        str((PROJECT_ROOT / "c.root").resolve()),
+    ]
 
 
 def test_stat_tools_with_generated_files():
@@ -1333,21 +1411,22 @@ def test_fractional_integral_partial_bins():
     assert math.isclose(val, 17.5, rel_tol=1e-9)
 
 
-def test_roostats_fractional_b_uncertainty_behavior():
-    assert _roostats_fractional_b_uncertainty(0.0) == 0.0
-    assert _roostats_fractional_b_uncertainty(1.0) == 1e-4
-
-
-def test_number_counting_expected_significance_b_zero():
-    # When background <= 0 the helpers return NaN per implementation
-    z = _number_counting_expected_significance(5.0, 0.0)
-    assert math.isnan(z)
-
-
-def test_roostats_upper_limit_zero_signal_returns_inf():
-    # The helper returns +inf for zero nominal signal
-    mu = _roostats_upper_limit(0, 10.0, 0.0, cl=0.95)
+def test_upper_limit_zero_signal_returns_inf():
+    # Upper limit is +inf for zero nominal signal
+    mu = _upper_limit(0, 10.0, 0.0, cl=0.95)
     assert mu == float("inf")
+
+
+def test_significance_from_yields_b_zero():
+    # When background <= 0 the function handles gracefully
+    z = _compute_significance_from_yields(5.0, 0.0)
+    assert math.isinf(z)
+
+
+def test_optimal_cut_significance():
+    # S/sqrt(S+B) metric
+    sig = _optimal_cut_significance(16.0, 9.0)
+    assert math.isclose(sig, 16.0 / 5.0, rel_tol=1e-9)
 
 
 def test_stat_summary_basic_format_and_probabilities():
@@ -1358,3 +1437,200 @@ def test_stat_summary_basic_format_and_probabilities():
     for p in p0_values:
         pv = float(p)
         assert 0.0 <= pv <= 1.0
+
+
+def test_plot_significance_and_cls_rejects_mismatched_array_lengths(tmp_path):
+    output = plot_significance_and_cls.invoke(
+        {
+            "parameter_values": [225.0, 250.0],
+            "significance": [1.7],
+            "output_png": str(tmp_path / "scan.png"),
+        }
+    )
+
+    assert output == "Error: parameter_values and y-data must have the same length."
+
+
+def test_plot_significance_and_cls_rejects_multiple_series(tmp_path):
+    output = plot_significance_and_cls.invoke(
+        {
+            "parameter_values": [225.0, 250.0],
+            "significance": [1.7, 2.0],
+            "cls": [0.1, 0.2],
+            "output_png": str(tmp_path / "scan.png"),
+        }
+    )
+
+    assert output == "Error: provide exactly one of significance, cls, upper_limits, or y when plotting arrays."
+
+
+def test_summarize_parameter_scan_supports_width_and_cls_only():
+    output = summarize_parameter_scan.invoke(
+        {
+            "parameter_values": [0.10, 0.20, 0.30],
+            "parameter_name": "width",
+            "series": {"cls": [0.20, 0.05, 0.10]},
+            "top_n": 2,
+        }
+    )
+
+    assert "Ranking (by cls, ascending):" in output
+    assert "Best point: width = 0.2, cls = 0.05" in output
+    assert "width = 0.3, cls = 0.1" in output
+
+
+def test_summarize_parameter_scan_prefers_significance_when_present():
+    output = summarize_parameter_scan.invoke(
+        {
+            "parameter_values": [1.0, 2.0],
+            "parameter_name": "width",
+            "series": {"z_obs": [1.5, 2.5], "cls": [0.20, 0.30]},
+        }
+    )
+
+    assert "Ranking (by z_obs, descending):" in output
+    assert "Best point: width = 2, z_obs = 2.5, cls = 0.3" in output
+
+
+def test_summarize_parameter_scan_rejects_mismatched_lengths():
+    output = summarize_parameter_scan.invoke(
+        {
+            "parameter_values": [225.0, 250.0],
+            "series": {"cls": [0.2]},
+        }
+    )
+
+    assert output == "Error: cls has length 1, expected 2 to match parameter_values"
+
+
+def test_summarize_parameter_scan_accepts_legacy_inputs_without_series():
+    output = summarize_parameter_scan.invoke(
+        {
+            "parameter_values": [225.0, 250.0],
+            "observed_significance": [2.1, 2.4],
+            "expected_significance": [1.8, 1.9],
+            "sort_by": "observed_significance",
+            "descending": True,
+            "top_n": 2,
+        }
+    )
+
+    assert "Ranking (by observed_significance, descending):" in output
+    assert "Best point: parameter = 250, observed_significance = 2.4, expected_significance = 1.9" in output
+
+
+def test_histogram_significance_and_limits_auto_detects_full_range(tmp_path):
+    """When center and window are None, auto-detect full histogram range."""
+    root_file = tmp_path / "auto_detect.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    # Histogram range: [10.0, 50.0]
+    hbkg = ROOT.TH1F("bkg", "bkg", 20, 10.0, 50.0)
+    hsig = ROOT.TH1F("sig", "sig", 20, 10.0, 50.0)
+    hdata = ROOT.TH1F("data", "data", 20, 10.0, 50.0)
+
+    for _ in range(20):
+        hbkg.Fill(25.0)
+    for _ in range(5):
+        hsig.Fill(25.0)
+    for _ in range(22):
+        hdata.Fill(25.0)
+
+    hbkg.Write()
+    hsig.Write()
+    hdata.Write()
+    f.Close()
+
+    # Call without center and window - should auto-detect
+    output = histogram_significance_and_limits.invoke(
+        {
+            "file_path": str(root_file),
+            "data_name": "data",
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+        }
+    )
+
+    # Expected center: (10.0 + 50.0) / 2 = 30.0
+    # Expected window: (50.0 - 10.0) / 2 = 20.0
+    assert "Center=30" in output
+    assert "Window=[10" in output or "Window=[1" in output  # catches [10, 50] format
+    assert "Expected(S+B Asimov):" in output
+
+
+def test_histogram_upper_limit_auto_detects_full_range(tmp_path):
+    """When center and window are None, auto-detect full histogram range."""
+    root_file = tmp_path / "auto_detect_ul.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    # Histogram range: [0.0, 10.0]
+    hbkg = ROOT.TH1F("bkg", "bkg", 10, 0.0, 10.0)
+    hsig = ROOT.TH1F("sig", "sig", 10, 0.0, 10.0)
+    hdata = ROOT.TH1F("data", "data", 10, 0.0, 10.0)
+
+    hbkg.SetBinContent(1, 10.0)
+    hsig.SetBinContent(1, 5.0)
+    hdata.SetBinContent(1, 12.0)
+
+    hbkg.Write()
+    hsig.Write()
+    hdata.Write()
+    f.Close()
+
+    # Call without center and window - should auto-detect
+    output = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "data_name": "data",
+        }
+    )
+
+    # Expected center: (0.0 + 10.0) / 2 = 5.0
+    # Expected window: (10.0 - 0.0) / 2 = 5.0
+    assert "Center=5" in output
+    assert "Expected(B Asimov):" in output
+    assert "Observed:" in output
+    assert "mu_up=" in output
+
+
+def test_histogram_upper_limit_auto_detect_vs_explicit(tmp_path):
+    """Verify that auto-detection produces same results as explicit full-range params."""
+    root_file = tmp_path / "ul_compare.root"
+    f = ROOT.TFile.Open(str(root_file), "RECREATE")
+
+    hbkg = ROOT.TH1F("bkg", "bkg", 1, 2.0, 8.0)
+    hsig = ROOT.TH1F("sig", "sig", 1, 2.0, 8.0)
+    hbkg.SetBinContent(1, 15.0)
+    hsig.SetBinContent(1, 3.0)
+    hbkg.Write()
+    hsig.Write()
+    f.Close()
+
+    # Auto-detect version
+    output_auto = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+        }
+    )
+
+    # Explicit full-range version: center=(2+8)/2=5, window=(8-2)/2=3
+    output_explicit = histogram_upper_limit.invoke(
+        {
+            "file_path": str(root_file),
+            "bkg_name": "bkg",
+            "sig_name": "sig",
+            "center": 5.0,
+            "window": 3.0,
+        }
+    )
+
+    # Extract mu_up values from both
+    mu_auto = float(re.search(r"mu_up=([0-9.eE+\-]+)", output_auto).group(1))
+    mu_explicit = float(re.search(r"mu_up=([0-9.eE+\-]+)", output_explicit).group(1))
+
+    # Should be identical (or very close due to floating point)
+    assert abs(mu_auto - mu_explicit) < 1e-6, f"auto={mu_auto}, explicit={mu_explicit}"

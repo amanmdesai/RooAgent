@@ -1,18 +1,18 @@
-import math
 from typing import List, Optional
 
 import ROOT
 from langchain_core.tools import tool
 
 from .utils import (
+    _normalize_parallel_arrays,
     _plot_2d_hist,
     _plot_2d_tree,
     _plot_hist,
     _plot_hist_compare,
     _plot_signal_vs_backgrounds,
     _plot_tree,
-    _build_signal_background_ratio,
     _plot_tree_compare,
+    _to_float_list,
 )
 
 
@@ -32,7 +32,7 @@ def plot(
     variables: Optional[List[str]] = None,
     legends: Optional[List[str]] = None,
     xlabel: str = "",
-    ylabel: str = "",
+    ylabel: str = "Events",
     logy: bool = False,
     normalize: bool = False,
     show_ratio: bool = False,
@@ -40,6 +40,7 @@ def plot(
     weight_branch: str = "",
     cuts: Optional[List[str]] = None,
     vector_mode: str = "any",
+    apply_cuts_before_plot: bool = True,
     signal_file: str = "",
     signal_files: Optional[List[str]] = None,
     signal_label: str = "Signal",
@@ -49,14 +50,42 @@ def plot(
     data_file: str = "",
     data_label: str = "Data",
     plot_data: bool = False,
-    apply_cuts_before_plot: bool = False,
 ):
-    """
-    General plotting tool for histograms and trees. Supports several modes.
-    mode: "hist" (file_path+hist_name) | "tree" (file_path+tree_name+variable+bins/xmin/xmax) |
-          "tree_compare" (file_paths+variables+legends) |
-          "hist_compare" (file_paths+hist_names+legends) |
-          "signal_background" (signal_file/signal_files + background_files).
+    """Plot 1D distributions from histograms or TTree branches and produce comparison or signal/background plots.
+
+    Args:
+        mode (str): One of 'hist', 'tree', 'tree_compare', 'hist_compare', or 'signal_background'.
+        output_pdf (str): Path to save the resulting plot (PDF).
+        file_path (str): Path to a single ROOT file (required for single-file modes).
+        file_paths (List[str], optional): Multiple ROOT files for compare modes.
+        hist_name (str, optional): Histogram name when mode='hist'.
+        hist_names (List[str], optional): Histogram names when mode='hist_compare'.
+        tree_name (str, optional): TTree name when mode involves trees.
+        variable (str, optional): Branch name to plot for single-tree modes.
+        variables (List[str], optional): Branch names for compare/tree_compare modes.
+        legends (List[str], optional): Legend labels parallel to file_paths/hist_names.
+        xlabel (str, optional): X-axis label.
+        ylabel (str, optional): Y-axis label.
+        bins (int, optional): Binning for tree->hist conversion.
+        xmin (float, optional): Lower bound for binning.
+        xmax (float, optional): Upper bound for binning.
+        logy (bool, optional): Use a logarithmic y-axis.
+        normalize (bool, optional): Normalize histograms before plotting.
+        show_ratio (bool, optional): Show ratio subplot for compares.
+        rebin (int, optional): Rebin factor to apply before plotting.
+        weight_branch (str, optional): Weight branch or expression for event weights.
+        cuts (List[str], optional): Selection expressions (C++ syntax).
+        vector_mode (str, optional): How to treat vector branches ('any' or 'all').
+        apply_cuts_before_plot (bool, optional): If False, any provided `cuts` will be ignored and not applied before plotting.
+        signal_file (str), signal_files (List[str], optional): Signal inputs for signal/background mode.
+        background_files (List[str], optional): Background inputs for signal/background mode.
+        data_file (str, optional): Observed data file for overlay.
+        plot_data (bool, optional): Whether to include a data overlay.
+
+    Returns:
+        str: Confirmation message with saved file path on success, or a descriptive error message.
+    Notes:
+        Request only parameters relevant to the selected `mode`. Provide an explicit example when prompting for missing inputs.
     """
     mode_key = (mode or "").strip().lower()
 
@@ -90,6 +119,7 @@ def plot(
             cuts=cuts,
             rebin=rebin,
             vector_mode=vector_mode,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
 
     if mode_key == "tree_compare":
@@ -110,6 +140,7 @@ def plot(
             weight_branch=weight_branch,
             cuts=cuts,
             vector_mode=vector_mode,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
 
     if mode_key == "hist_compare":
@@ -165,7 +196,6 @@ def plot_2d(
     tree_name: str = "",
     variable_x: str = "",
     variable_y: str = "",
-    # legacy aliases accepted by tests / callers
     x_branch: str = "",
     y_branch: str = "",
     hist_name: str = "",
@@ -185,10 +215,33 @@ def plot_2d(
     weight_branch: str = "",
     cuts: Optional[List[str]] = None,
     vector_mode: str = "any",
+    apply_cuts_before_plot: bool = True,
 ):
-    """
-    Plot 2D histograms or trees.
-    mode: "hist" (file_path+hist_name) | "tree" (file_path+tree_name+variable_x+variable_y).
+    """Create 2D plots from a 2D histogram or two tree branches.
+
+    Args:
+        mode (str): 'hist' or 'tree'. 'hist' expects `file_path` + `hist_name`. 'tree' expects `file_path` + `tree_name` + `variable_x` + `variable_y` (or x_branch/y_branch).
+        output_pdf (str): Path to save the produced plot (PDF).
+        file_path (str): ROOT file path.
+        hist_name (str, optional): Histogram name when mode='hist'.
+        tree_name (str, optional): TTree name when mode='tree'.
+        variable_x (str, optional): X-axis branch name when mode='tree'.
+        variable_y (str, optional): Y-axis branch name when mode='tree'.
+        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and limits.
+        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and limits.
+        xlabel (str, optional), ylabel (str, optional), zlabel (str, optional): Axis labels.
+        logz (bool, optional): Use logarithmic color scale.
+        normalize (bool, optional): Normalize 2D histogram before plotting.
+        rebin_x (int, optional), rebin_y (int, optional): Rebin factors for each axis.
+        weight_branch (str, optional): Weight branch or expression for event weights.
+        cuts (List[str], optional): Selection expressions (C++ syntax) applied before plotting.
+        vector_mode (str, optional): How to treat vector branches ('any' or 'all').
+        apply_cuts_before_plot (bool, optional): If False, any provided `cuts` will be ignored and not applied before plotting.
+
+    Returns:
+        str: Confirmation message with saved file path or an error message.
+    Notes:
+        Request only the parameters required for the selected `mode` and provide an explicit example when prompting the user.
     """
     mode_key = (mode or "").strip().lower()
 
@@ -209,7 +262,6 @@ def plot_2d(
         )
 
     if mode_key == "tree":
-        # Accept either `variable_x/variable_y` or legacy `x_branch/y_branch` names.
         vx = variable_x or x_branch
         vy = variable_y or y_branch
         if not file_path or not tree_name or not vx or not vy:
@@ -229,6 +281,13 @@ def plot_2d(
             xlabel=xlabel,
             ylabel=ylabel,
             color_palette=55,
+            normalize=normalize,
+            rebin_x=rebin_x,
+            rebin_y=rebin_y,
+            weight_branch=weight_branch,
+            cuts=cuts,
+            vector_mode=vector_mode,
+            apply_cuts_before_plot=apply_cuts_before_plot,
         )
 
     return "Error: unsupported mode. Use one of: hist, tree."
@@ -236,46 +295,77 @@ def plot_2d(
 
 @tool
 def plot_significance_and_cls(
-    masses: Optional[List[float]] = None,
+    parameter_values: Optional[List[float]] = None,
     significance: Optional[List[Optional[float]]] = None,
     cls: Optional[List[Optional[float]]] = None,
     upper_limits: Optional[List[Optional[float]]] = None,
     y: Optional[List[Optional[float]]] = None,
+    expected: Optional[List[Optional[float]]] = None,
     y_label: str = "Y",
+    parameter_label: str = "Parameter",
+    observed_label: str = "Observed",
+    draw_cls_threshold: bool = False,
+    cls_threshold: float = 0.05,
+    logy: bool = False,
     output_png: str = "",
     output_pdf: str = "",
-    # Legacy number-counting signature (kept for backwards compatibility)
     n_sig: Optional[float] = None,
     n_bkg: Optional[float] = None,
     n_obs: Optional[int] = None,
-    method: str = "roostats",
-    null_is_sb: bool = False,
-    conf_level: float = 0.95,
 ):
-    """Flexible plotting or numeric summary for significances / CLs.
+    """Plot or summarize discovery significance and CLs/limits.
 
-    - If `n_sig` and `n_bkg` are provided, returns the numeric `_stat_summary`.
-    - Otherwise expects `masses` + one of (`significance` | `cls` | `upper_limits` | `y`) and
-      will create a PNG/PDF plot saved to `output_png`/`output_pdf`.
+    Modes:
+        Array plotting mode: provide `parameter_values` and one of `significance`, `cls`, `upper_limits`, or a generic `y` array. If neither `output_png` nor `output_pdf` is provided, the plot is saved to `significance_cls.png`.
+        Numeric summary mode: provide `n_sig` (expected signal yield) and `n_bkg` (expected background yield). `n_obs` is optional and will produce observed quantities when given.
+
+    Args:
+        parameter_values (List[float], optional): Scan parameter points.
+        significance (List[float], optional): Significance values corresponding to the scan parameter.
+        cls (List[float], optional): CLs values corresponding to the scan parameter.
+        upper_limits (List[float], optional): Upper-limit values corresponding to the scan parameter.
+        y (List[float], optional): Generic y-values corresponding to the scan parameter.
+        expected (List[float], optional): Backward-compatible input accepted but intentionally ignored (single-series plot only).
+        y_label (str, optional): Axis label for plots.
+        parameter_label (str, optional): X-axis label for the scan parameter.
+        observed_label (str, optional): Legend label for the curve.
+        draw_cls_threshold (bool, optional): Draw a horizontal CLs threshold line.
+        cls_threshold (float, optional): Y-value for the CLs threshold guide line (default 0.05).
+        logy (bool, optional): Use logarithmic y-axis when plotting arrays.
+        output_png (str, optional), output_pdf (str, optional): Paths to save the plot files. If both are empty in array mode, `output_png` defaults to `significance_cls.png`.
+        n_sig (float, optional), n_bkg (float, optional), n_obs (int, optional): Numeric-mode yields for a single-point summary.
+
+    Returns:
+        str: In array mode, saves the plot and returns a success message. In numeric mode, returns a textual summary with S, B, Z and (if available) CLs/limits.
+    Notes:
+        If `n_sig` and `n_bkg` are provided, the function returns a numeric summary without plotting. When plotting arrays, ensure scan and y arrays have matching lengths.
     """
-    # Backwards-compatible numeric mode
     if n_sig is not None and n_bkg is not None:
         from .utils import _stat_summary
-
         return _stat_summary(n_bkg=n_bkg, n_sig=n_sig, n_obs=n_obs)
 
-    # Determine y-data from convenience kwargs
+    # Determine y-data from convenience kwargs.
+    provided_series = [
+        ("significance", significance),
+        ("cls", cls),
+        ("upper_limits", upper_limits),
+        ("y", y),
+    ]
+    provided_series = [(name, values) for name, values in provided_series if values is not None]
+
+    if len(provided_series) > 1:
+        return "Error: provide exactly one of significance, cls, upper_limits, or y when plotting arrays."
+
+    series_name = ""
     y_data = None
-    for cand in (significance, cls, upper_limits, y):
-        if cand is not None:
-            y_data = cand
-            break
+    if provided_series:
+        series_name, y_data = provided_series[0]
 
     if y_data is None:
         return "Error: no y-data provided (significance/cls/upper_limits/y)."
 
     if not output_png and not output_pdf:
-        return "Error: must provide output_png or output_pdf to save plot."
+        output_png = "significance_cls.png"
 
     try:
         import matplotlib
@@ -286,27 +376,38 @@ def plot_significance_and_cls(
     except Exception:
         return "Error: plotting backend not available"
 
-    if masses is None:
-        return "Error: masses must be provided when plotting arrays."
+    if parameter_values is None:
+        return "Error: parameter_values must be provided when plotting arrays."
 
-    # Convert to numpy arrays and handle None -> nan
-    masses_arr = np.array([float(x) for x in masses], dtype=float)
-    y_list = [np.nan if v is None else float(v) for v in y_data]
-    y_arr = np.array(y_list, dtype=float)
+    try:
+        parameter_data, series_data = _normalize_parallel_arrays("parameter_values", parameter_values, {"y": y_data})
+    except ValueError as exc:
+        message = str(exc).replace("parameter_values", "parameter_values")
+        if "y has length" in message:
+            return "Error: parameter_values and y-data must have the same length."
+        if message == "values must be finite numeric values":
+            return "Error: parameter_values and y-data must be finite numeric values."
+        return f"Error: {message}"
 
-    # Truncate to shortest length with warning if lengths mismatch
-    ln = min(len(masses_arr), len(y_arr))
-    warn = ""
-    if len(masses_arr) != len(y_arr):
-        warn = "WARNING: masses/y length mismatch — truncating to shortest length."
-        masses_arr = masses_arr[:ln]
-        y_arr = y_arr[:ln]
+    # Backward compatibility: accept `expected` argument but do not render a
+    # second curve. This keeps single-series behavior deterministic.
+    _ = expected
+
+    x_arr = np.array(parameter_data, dtype=float)
+    y_arr = np.array(series_data["y"], dtype=float)
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(masses_arr, y_arr, marker="o", linestyle="-", color="C0")
-    ax.set_xlabel("Mass")
+    ax.plot(x_arr, y_arr, marker="o", linestyle="-", color="C0", label=observed_label)
+
+    if draw_cls_threshold or series_name == "cls":
+        ax.axhline(float(cls_threshold), color="black", linestyle="--", linewidth=1.0, label=f"CLs={float(cls_threshold):.3g}")
+
+    ax.set_xlabel(parameter_label)
     ax.set_ylabel(y_label)
+    if logy:
+        ax.set_yscale("log")
     ax.grid(True)
+    ax.legend()
 
     if output_png:
         fig.savefig(output_png, bbox_inches="tight")
@@ -319,6 +420,4 @@ def plot_significance_and_cls(
         msg = f"Saved {output_png}"
     elif output_pdf:
         msg = f"Saved {output_pdf}"
-    if warn:
-        msg = f"{warn} {msg}"
     return msg

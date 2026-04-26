@@ -4,11 +4,23 @@ import pandas as pd
 from langchain_core.tools import tool
 
 @tool
-def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output_csv: str, max_vector_size: int = 5) -> str:
-    """Export specified branches from a TTree to CSV.
+def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output_csv: str, max_vector_size: int = 4) -> str:
+    """Export selected TTree branches to a flattened CSV file, expanding small vector branches to columns.
 
-    Vector branches are flattened into columns suffixed with an index ("_0", "_1", ...)
-    up to `max_vector_size`. Provide a minimal list of branches to read only necessary data.
+    Args:
+        file_path (str): ROOT file path containing the TTree.
+        tree_name (str): Name of the TTree to export.
+        branches (List[str]): List of branch names to extract; vector branches will be expanded.
+        output_csv (str): Path to write the CSV file.
+        max_vector_size (int, optional): Maximum vector length to expand (default 4). Longer vectors are truncated.
+
+    Returns:
+        str: Confirmation message with saved CSV path or an error message.
+    Returns:
+        str: confirmation message with saved CSV path or an error message.
+
+    Notes:
+        Make explicit whether vector branches should be expanded and the maximum expansion (`max_vector_size`) when prompting the user.
     """
     df = ROOT.RDataFrame(tree_name, file_path)
     data = df.AsNumpy(branches)

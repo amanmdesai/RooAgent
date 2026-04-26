@@ -16,8 +16,23 @@ def fit_distribution(
     xmax: float = 1.0,
     hist_name: str = "",
 ) -> str:
-    """Fit a ROOT function to a TH1 or TTree branch and save an annotated plot.
-    source: "tree" or "hist". fit_function: ROOT name (e.g. "gaus", "pol1", "expo"). Returns fit parameters and chi2/ndf.
+    """Fit a ROOT function to a 1D distribution obtained from a TTree or an existing histogram.
+
+    Args:
+        source (str): 'tree' or 'hist'. Determines whether to build a histogram from a TTree branch or use a stored histogram.
+        file_path (str): Path to the ROOT file containing the source data.
+        fit_function (str): ROOT fit function name or TF1 expression (for example, 'gaus').
+        output_plot (str): Path where the fit canvas/plot will be saved.
+        tree_name (str, optional): Name of the TTree (required when source='tree').
+        variable (str, optional): Branch name to histogram (required when source='tree').
+        bins (int, optional): Number of bins for tree->hist conversion (default 50).
+        xmin (float, optional): Lower x-axis bound for tree->hist conversion (default 0.0).
+        xmax (float, optional): Upper x-axis bound for tree->hist conversion (default 1.0).
+        hist_name (str, optional): Histogram name inside the ROOT file when source='hist'.
+
+    Returns:
+        str: A human-readable summary containing fitted parameters and chi2/ndf or an error message.
+
     """
     source_key = (source or "").strip().lower()
 
@@ -86,4 +101,4 @@ def fit_distribution(
     params = [f"p{i}={func.GetParameter(i):.4f}" for i in range(func.GetNpar())]
     chi2 = func.GetChisquare()
     ndf = func.GetNDF()
-    return f"Fit {fit_function} [{label}]: {', '.join(params)} chi2/ndf={chi2:.3f}/{ndf} -> {output_plot}"
+    return f"Fit {fit_function} [{label}]: {', '.join(params)} chi2/ndf={chi2:.3f}/{ndf}"

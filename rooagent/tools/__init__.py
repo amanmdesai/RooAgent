@@ -16,7 +16,7 @@ import ROOT
 # Run ROOT in batch mode by default for non-interactive environments
 ROOT.gROOT.SetBatch(True)
 
-# Suppress noisy ROOT, RooFit, and RooStats printouts globally.
+# Suppress noisy ROOT and RooFit printouts globally.
 try:
 	ROOT.gErrorIgnoreLevel = ROOT.kError
 except Exception:
@@ -28,11 +28,7 @@ except Exception:
 	pass
 
 try:
-	ROOT.RooStats.AsymptoticCalculator.SetPrintLevel(0)
-except Exception:
-	pass
-
-try:
+	# Suppress RooFit message service verbosity when available.
 	msg_service = ROOT.RooMsgService.instance()
 	msg_service.setGlobalKillBelow(ROOT.RooFit.ERROR)
 except Exception:

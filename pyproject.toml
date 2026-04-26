@@ -19,6 +19,7 @@ dependencies = [
     "uproot",
     "pandas",
     "numpy",
+    "scipy",
     "matplotlib>=3.5",
 ]
 

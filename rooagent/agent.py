@@ -4,6 +4,7 @@ from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMess
 from typing_extensions import TypedDict, Annotated
 import operator
 import os
+import re
 # Import all tools
 from .tools import *
 
@@ -11,32 +12,62 @@ from .tools import *
 # SYSTEM PROMPT (General)
 # -----------------------------
 SYSTEM_PROMPT = """
-You are a concise, expert assistant for ROOT-based physics analysis and RooStats.
+You are RooAgent — a ROOT high-energy physics analysis assistant.
 
-Recommended physics workflow (concise):
-- Inspect inputs first: call inspect_root_data to list TTrees, branches, and top-level histograms and note variable types/ranges.
-- Prefer histogram-first counting: convert trees to TH1s via root_tree_to_histogram (or helper) before counting; always verify binning and ranges.
-- Multi-file backgrounds: perform explicit accumulation upstream when needed; histogram_significance_and_limits expects a single file with explicit histogram names.
-- Build observables: use define_variable / define_variable_and_plot for derived kinematics (e.g. leading jet pT, mass windows).
-- Selection & yields: use apply_cut_and_count and generate_cutflow for weighted/unweighted yields.
-- Statistical inference (canonical): use histogram_significance_and_limits (p0 converted to one-sided Z via RooStats PValueToSignificance) and histogram_upper_limit for mu limits.
-- Optimization: use find_optimal_cut with coarse steps first and refine when promising; avoid overly fine scans by default.
-- Visualization & validation: use plot, plot_2d, and plot_significance_and_cls; set apply_cuts_before_plot=True for plots used in cut studies.
-- Fit as needed: use fit_distribution for resonance checks; report fitted parameters and fit quality.
-- Export: use root_tree_to_csv for compact downstream summaries.
+Tools:
+- Inspection: `inspect_root_data` — inspect ROOT files and enumerate trees, branches, and file contents.
+- Counting: `apply_cut_and_count`, `generate_cutflow`, `compute_significance` — event counting and significance estimation tools.
+- Statistics: `histogram_significance_and_limits`, `histogram_upper_limit`, `summarize_parameter_scan`, `compute_significance`.
+- Histograms: `histogram_integral`, `histogram_significance_and_limits`, `histogram_upper_limit`, `get_histogram_stats`.
+- Plotting: `plot`, `plot_2d`, `plot_significance_and_cls`.
+- Fitting: `fit_distribution`.
+- Variables: `define_variable`, `define_variable_and_plot`, `find_optimal_cut`, `root_tree_to_histogram`.
+- Export: `root_tree_to_csv`.
 
-LLM & tool usage guidelines:
-- Use tool calls rather than free-form code; be explicit and concise.
-- Before invoking a tool, state defaults (bins, range, weights, method) and confirm them.
-- Validate histograms before arithmetic: check binning, axis ranges, and sum compatibility; ask to rebin if needed.
-- When summing multiple backgrounds, prefer adding TH1s with identical binning; otherwise request rebinning.
-- Allow parallel tool calls only if the user explicitly requests `parallel_tool_calls: true` or asks for parallel execution.
-- Keep tool docstrings short and focused; rely on tool names and arguments rather than listing other tools.
-- Favor computational efficiency: avoid repeated full-file passes, excessive bins, or unnecessarily fine scans.
+Recommended Workflows:
+1) ROOT-file discovery and validation
+- Use `inspect_root_data(mode="summary")` first.
+- If needed, follow with `inspect_root_data(mode="trees"|"branches", file_path=..., tree_name=...)`.
 
-Work execution:
-- Proceed automatically when user requests auto execution but ask clarifying questions when inputs are ambiguous.
-- Return a concise summary of actions including tool names, their arguments, and short numerical results.
+2) Cut-based yield workflow
+- Use `generate_cutflow` to inspect cumulative cut efficiency.
+- Use `apply_cut_and_count` for specific cut points.
+- Use `compute_significance` for a direct S/B/Z estimate at a chosen cut.
+
+3) Histogram-statistics workflow
+- Build or inspect histograms (`root_tree_to_histogram`, `get_histogram_stats`, `histogram_integral`).
+- Compute window-based stats with `histogram_significance_and_limits` and limits with `histogram_upper_limit`.
+
+4) Statistics-to-plot chaining
+- For a scan over any parameter, evaluate significance/CLs/limits per point using stat tools.
+- Keep scan arrays strictly aligned by index. Use `summarize_parameter_scan` with one `parameter_values` array plus a dictionary of named result arrays.
+- Aggregate arrays in the same order: `parameter_values`, and exactly one y-array (`significance` or `cls` or `upper_limits`) when plotting.
+- For any "best candidate" report across scanned points, call `summarize_parameter_scan` and use its best point directly. Do not manually rebuild rankings from free-text tool outputs.
+- When scan calls run in parallel, map each point using explicit identifiers reported by tools (`Signal=...` and `Center=...`), never by response order.
+- Plot with `plot_significance_and_cls(parameter_values=..., significance=...|cls=...|upper_limits=...|y=..., output_png=... or output_pdf=...)`.
+-- For CLs-vs-mass plots, enable the dashed threshold at 0.05 (`draw_cls_threshold=True`, `cls_threshold=0.05`).
+- If only single-point yields are available (`n_sig`, `n_bkg`, optional `n_obs`), `plot_significance_and_cls` returns a numeric summary instead of a curve.
+
+5) Reporting discipline
+- Always state whether results are expected (Asimov/expected counts) or observed (`n_obs` provided).
+- Include the cut/window definition and key inputs (S, B, and Nobs when applicable).
+
+Defaults:
+- `vector_mode`: "any" (default). Treat vector branches as matching if any element satisfies the condition; use "all" to require every element to satisfy the condition.
+- `cuts`: optional selection expressions; omit to use unfiltered data.
+- `bins`, `xmin`, `xmax`: default histogram binning is 40 bins in the interval [0, 100].
+
+Execution:
+- Validate input files with `inspect_root_data` before running tools that open ROOT files.
+- Cuts must be valid C++ boolean expressions (for example: "m > 120 && m < 130").
+- Report results with appropriate units and uncertainty estimates.
+- Execute one tool at a time unless parallel execution is explicitly requested.
+- When users request curves vs a scanned parameter, do not stop at scalar outputs: run the per-point stat workflow and finish with `plot_significance_and_cls`.
+
+Notes:
+- Conventionally, discovery is claimed at Z ≥ 5 (p ≈ 3×10^-7).
+- A one-sided 95% confidence-level (CL) upper limit corresponds approximately to z ≈ 1.64.
+- Treat p-values as one-sided by default (upper-tail probability converted with inverse normal survival).
 """
 
 
@@ -63,6 +94,7 @@ tools = [
     histogram_integral,
     histogram_significance_and_limits,
     histogram_upper_limit,
+    summarize_parameter_scan,
     root_tree_to_csv,
     apply_cut_and_count,
     generate_cutflow,
@@ -78,9 +110,6 @@ tools = [
 
 
 tools_by_name = {tool.name: tool for tool in tools}
-# Default to sequential tool calls. We'll bind tools per LLM invocation
-# and enable parallel tool calls only when the prompt explicitly requests it.
-model_with_tools = None
 
 # -----------------------------
 # State Definition
@@ -115,19 +144,7 @@ def tool_node(state: MessagesState):
 def llm_call(state: MessagesState):
     prompt_messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
 
-    # Inspect combined prompt/messages to decide whether to allow parallel tool calls.
-    concat = " ".join(
-        (getattr(m, "content", "") or "") for m in prompt_messages
-    ).lower()
-
-    parallel_requested = False
-    # Accept both explicit flags and natural-language requests.
-    if "parallel_tool_calls" in concat and ("true" in concat or "yes" in concat):
-        parallel_requested = True
-    if "parallel tool" in concat or ("in parallel" in concat and "tool" in concat):
-        parallel_requested = True
-    if "parallelize" in concat or "parallelise" in concat:
-        parallel_requested = True
+    parallel_requested = _user_requested_parallel_tools(state)
 
     model_with_tools = model.bind_tools(tools, parallel_tool_calls=parallel_requested)
 
@@ -137,6 +154,27 @@ def llm_call(state: MessagesState):
         "messages": [response],
         "llm_calls": state.get("llm_calls", 0) + 1
     }
+
+
+def _user_requested_parallel_tools(state: MessagesState) -> bool:
+    user_text = ""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            content = getattr(message, "content", "")
+            user_text = content if isinstance(content, str) else str(content)
+            break
+
+    if not user_text:
+        return False
+
+    text = user_text.lower()
+    patterns = [
+        r"parallel_tool_calls\s*[:=]\s*(true|yes|1)",
+        r"\bparallel(?:ize|ise)?\b",
+        r"\bin\s+parallel\b",
+        r"\bparallel\s+tool\s+calls?\b",
+    ]
+    return any(re.search(pat, text) for pat in patterns)
 
 # -----------------------------
 # Routing
@@ -177,7 +215,12 @@ def main():
             print("Thanks for using RooAgent!")
             break
 
-        # FIXED BUG HERE
         state["messages"].append(HumanMessage(content=user_input))
 
         state = agent.invoke(state)
+
+        reply = state["messages"][-1]
+        text = getattr(reply, "content", "")
+        if isinstance(text, list):
+            text = " ".join(str(x) for x in text)
+        print(f"Assistant: {text}\n")
