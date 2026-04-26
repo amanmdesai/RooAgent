@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container:
-      image: rootproject/root:6.34.00-ubuntu24.04
+      image: rootproject/root:6.36.00-ubuntu24.04
     env:
       PIP_NO_CACHE_DIR: "1"
     steps:
@@ -20,7 +20,7 @@ jobs:
       - name: Install Python tooling
         run: |
           apt-get update
-          apt-get install -y python3-pip python3-venv git strace
+          apt-get install -y python3-pip python3-venv git
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip setuptools wheel
 
@@ -40,45 +40,9 @@ jobs:
           set -x
           .venv/bin/python tests/gen_test_root_files.py
 
-      - name: Debug environment before pytest
+      - name: Run tests
         shell: bash -l {0}
         run: |
           set -x
-          echo "--- PATH ---"
-          echo "$PATH"
-          echo "--- python info ---"
-          which python3 || true
-          python3 -V || true
-          echo "--- venv listing ---"
-          ls -al .venv || true
-          echo "--- process list ---"
-          ps aux || true
-          echo "--- memory ---"
-          free -m || true
-          echo "--- disk ---"
-          df -h || true
-          echo "--- last dmesg (may require privileges) ---"
-          dmesg | tail -n 50 || true
-
-      - name: Run pytest under strace (capture signals)
-        shell: bash -l {0}
-        run: |
-          set -x
-          # Run pytest under strace and capture signal-related events.
-          # Output files: /tmp/pytest.strace.PID for each traced process.
-          strace -ff -tt -o /tmp/pytest.strace -e trace=signal .venv/bin/python -m pytest -q tests/ || true
-
-      - name: Package strace outputs
-        shell: bash -l {0}
-        if: always()
-        run: |
-          set -x
-          ls -al /tmp || true
-          tar czf /tmp/pytest-strace.tgz /tmp/pytest.strace* || true
-
-      - name: Upload strace artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-strace
-          path: /tmp/pytest-strace.tgz
+          .venv/bin/python tests/gen_test_root_files.py
+          .venv/bin/python -m pytest -q tests/
