@@ -34,8 +34,34 @@ jobs:
           python3 -m pip install -e .
           python3 -m pip install pytest matplotlib
 
-      - name: Run tests
+      - name: Prepare tests (generate files)
         shell: bash -l {0}
         run: |
+          set -x
           python3 tests/gen_test_root_files.py
+
+      - name: Debug environment before pytest
+        shell: bash -l {0}
+        run: |
+          set -x
+          echo "--- PATH ---"
+          echo "$PATH"
+          echo "--- python info ---"
+          which python3 || true
+          python3 -V || true
+          echo "--- venv listing ---"
+          ls -al .venv || true
+          echo "--- process list ---"
+          ps aux || true
+          echo "--- memory ---"
+          free -m || true
+          echo "--- disk ---"
+          df -h || true
+          echo "--- last dmesg (may require privileges) ---"
+          dmesg | tail -n 50 || true
+
+      - name: Run pytest
+        shell: bash -l {0}
+        run: |
+          set -x
           python3 -m pytest -q tests/
