@@ -50,41 +50,39 @@ def plot(
     data_label: str = "Data",
     plot_data: bool = False,
 ):
-    """Plot 1D distributions from histograms or TTree branches and produce comparison or signal/background plots.
+    """Plot 1D distributions from histograms or TTree branches.
+
+    Mode → required params:
+      'hist'             → file_path, hist_name
+      'tree'             → file_path, tree_name, variable
+      'tree_compare'     → file_paths, tree_name, variables, legends
+      'hist_compare'     → file_paths, hist_names, legends
+      'signal_background'→ signal_file (or signal_files), background_files, tree_name, variable
 
     Args:
-        mode (str): One of 'hist', 'tree', 'tree_compare', 'hist_compare', or 'signal_background'.
-        output_pdf (str): Path to save the resulting plot (PDF).
-        file_path (str): Path to a single ROOT file (required for single-file modes).
-        file_paths (List[str], optional): Multiple ROOT files for compare modes.
-        hist_name (str, optional): Histogram name when mode='hist'.
-        hist_names (List[str], optional): Histogram names when mode='hist_compare'.
-        tree_name (str, optional): TTree name when mode involves trees.
-        variable (str, optional): Branch name to plot for single-tree modes.
-        variables (List[str], optional): Branch names for compare/tree_compare modes.
-        legends (List[str], optional): Legend labels parallel to file_paths/hist_names.
-        xlabel (str, optional): X-axis label.
-        ylabel (str, optional): Y-axis label.
-        bins (int, optional): Binning for tree->hist conversion.
-        xmin (float, optional): Lower bound for binning.
-        xmax (float, optional): Upper bound for binning.
-        logy (bool, optional): Use a logarithmic y-axis.
-        normalize (bool, optional): Normalize histograms before plotting.
-        show_ratio (bool, optional): Show ratio subplot for compares.
-        rebin (int, optional): Rebin factor to apply before plotting.
-        weight_branch (str, optional): Weight branch or expression for event weights.
-        cuts (List[str], optional): Selection expressions (C++ syntax).
-        vector_mode (str, optional): How to treat vector branches ('any' or 'all').
-        apply_cuts_before_plot (bool, optional): If False, any provided `cuts` will be ignored and not applied before plotting.
-        signal_file (str), signal_files (List[str], optional): Signal inputs for signal/background mode.
-        background_files (List[str], optional): Background inputs for signal/background mode.
-        data_file (str, optional): Observed data file for overlay.
-        plot_data (bool, optional): Whether to include a data overlay.
+        mode: Plotting mode (see above).
+        output_pdf: Output PDF path.
+        file_path: Single ROOT file (hist/tree modes).
+        file_paths: Multiple ROOT files (compare/signal_background modes).
+        hist_name / hist_names: Histogram name(s) for hist modes.
+        tree_name: TTree name for tree modes.
+        variable / variables: Branch(es) to plot.
+        legends: Labels parallel to file_paths/hist_names (required for compare modes).
+        xlabel / ylabel: Axis labels.
+        bins / xmin / xmax: Binning for tree→hist conversion.
+        logy: Logarithmic y-axis.
+        normalize: Normalize before plotting.
+        show_ratio: Show ratio subplot (compare modes).
+        rebin: Rebin factor.
+        weight_branch: Per-event weight branch or expression.
+        cuts: C++ selection expressions.
+        vector_mode: 'any'(default) or 'all' for vector-branch cuts.
+        apply_cuts_before_plot: Set False to skip provided cuts.
+        signal_file / signal_files / signal_label / signal_labels: Signal inputs (signal_background mode).
+        background_files / background_labels: Background inputs (signal_background mode).
+        data_file / data_label / plot_data: Optional data overlay (signal_background mode).
 
-    Returns:
-        str: Confirmation message with saved file path on success, or a descriptive error message.
-    Notes:
-        Request only parameters relevant to the selected `mode`. Provide an explicit example when prompting for missing inputs.
+    Returns: Confirmation with saved path, or error string.
     """
     mode_key = (mode or "").strip().lower()
 
@@ -216,31 +214,31 @@ def plot_2d(
     vector_mode: str = "any",
     apply_cuts_before_plot: bool = True,
 ):
-    """Create 2D plots from a 2D histogram or two tree branches.
+    """Create a 2D plot from a TH2 histogram or two TTree branches.
+
+    Mode → required params:
+      'hist' → file_path, hist_name
+      'tree' → file_path, tree_name, variable_x, variable_y
 
     Args:
-        mode (str): 'hist' or 'tree'. 'hist' expects `file_path` + `hist_name`. 'tree' expects `file_path` + `tree_name` + `variable_x` + `variable_y` (or x_branch/y_branch).
-        output_pdf (str): Path to save the produced plot (PDF).
-        file_path (str): ROOT file path.
-        hist_name (str, optional): Histogram name when mode='hist'.
-        tree_name (str, optional): TTree name when mode='tree'.
-        variable_x (str, optional): X-axis branch name when mode='tree'.
-        variable_y (str, optional): Y-axis branch name when mode='tree'.
-        bins_x (int, optional), xmin (float, optional), xmax (float, optional): X-axis binning and limits.
-        bins_y (int, optional), ymin (float, optional), ymax (float, optional): Y-axis binning and limits.
-        xlabel (str, optional), ylabel (str, optional), zlabel (str, optional): Axis labels.
-        logz (bool, optional): Use logarithmic color scale.
-        normalize (bool, optional): Normalize 2D histogram before plotting.
-        rebin_x (int, optional), rebin_y (int, optional): Rebin factors for each axis.
-        weight_branch (str, optional): Weight branch or expression for event weights.
-        cuts (List[str], optional): Selection expressions (C++ syntax) applied before plotting.
-        vector_mode (str, optional): How to treat vector branches ('any' or 'all').
-        apply_cuts_before_plot (bool, optional): If False, any provided `cuts` will be ignored and not applied before plotting.
+        mode: 'hist' or 'tree'.
+        output_pdf: Output PDF path.
+        file_path: ROOT file path.
+        hist_name: TH2 name (mode='hist').
+        tree_name: TTree name (mode='tree').
+        variable_x / variable_y: Branch names for x/y axes (mode='tree'; preferred over x_branch/y_branch).
+        bins_x / xmin / xmax: X-axis binning.
+        bins_y / ymin / ymax: Y-axis binning.
+        xlabel / ylabel / zlabel: Axis labels.
+        logz: Logarithmic color scale.
+        normalize: Normalize before plotting.
+        rebin_x / rebin_y: Rebin factors per axis.
+        weight_branch: Per-event weight branch or expression.
+        cuts: C++ selection expressions.
+        vector_mode: 'any'(default) or 'all' for vector-branch cuts.
+        apply_cuts_before_plot: Set False to skip provided cuts.
 
-    Returns:
-        str: Confirmation message with saved file path or an error message.
-    Notes:
-        Request only the parameters required for the selected `mode` and provide an explicit example when prompting the user.
+    Returns: Confirmation with saved path, or error string.
     """
     mode_key = (mode or "").strip().lower()
 
@@ -312,54 +310,30 @@ def plot_significance_and_cls(
     n_bkg: Optional[float] = None,
     n_obs: Optional[int] = None,
 ):
-    """Plot or summarize discovery significance and CLs vs a scan parameter.
+    """Plot significance/CLs vs a scan parameter (array mode), or return a point stat summary (summary mode).
 
-    This tool has two operating modes:
-
-    **Array plotting mode** — provide `parameter_values` and one of `significance`, `cls`, or
-    a generic `y` array as the primary (observed) curve. An optional `expected` array of the
-    same length may be passed to overlay a second dashed curve (typically the Asimov/expected
-    result) on the same axes. Both curves share the x-axis defined by `parameter_values`.
-    If neither `output_png` nor `output_pdf` is given the plot is saved to `significance_cls.png`.
-    Output directories are created automatically if they do not yet exist.
-
-    **Numeric summary mode** — provide `n_sig` (expected signal yield) and `n_bkg` (expected
-    background yield). `n_obs` is optional and produces observed quantities alongside the
-    expected ones when supplied. No plot is produced; a text summary is returned instead.
+    Array mode: provide parameter_values + exactly one of significance/cls/y.
+      Optional expected overlays a dashed second curve.
+      When cls data is passed, the CLs=0.05 threshold line is drawn automatically.
+      Saves to output_png/output_pdf (default: significance_cls.png).
+    Summary mode: provide n_sig + n_bkg (+ optional n_obs) — returns text, no plot.
 
     Args:
-        parameter_values (List[float], optional): Scan parameter points (x-axis), required in array mode.
-        significance (List[float], optional): Significance (Z) values for each scan point (primary curve).
-        cls (List[float], optional): CLs values for each scan point (primary curve).
-        y (List[float], optional): Generic y-values for each scan point (primary curve).
-        expected (List[float], optional): Second curve (e.g. Asimov/expected significance or CLs) drawn
-            as a dashed line. Must have the same length as `parameter_values`. If lengths differ an
-            error is returned.
-        y_label (str, optional): Y-axis label for the plot.
-        parameter_label (str, optional): X-axis label for the scan parameter.
-        observed_label (str, optional): Legend label for the primary (solid) curve. Default 'Observed'.
-        expected_label (str, optional): Legend label for the dashed expected curve. Default 'Expected'.
-        draw_cls_threshold (bool, optional): Draw a horizontal dashed threshold line (e.g. CLs = 0.05).
-        cls_threshold (float, optional): Y-value for the threshold guide line (default 0.05).
-        logy (bool, optional): Use a logarithmic y-axis.
-        output_png (str, optional): Path to save the PNG. Parent directory is created if needed.
-        output_pdf (str, optional): Path to save the PDF. Parent directory is created if needed.
-        n_sig (float, optional): Signal yield for single-point numeric summary mode.
-        n_bkg (float, optional): Background yield for single-point numeric summary mode.
-        n_obs (int, optional): Observed count for single-point numeric summary mode.
+        parameter_values: Scan x-axis values (array mode).
+        significance: Z values per scan point (primary curve).
+        cls: CLs values per scan point (primary curve; auto-draws threshold line).
+        y: Generic y-values per scan point (primary curve).
+        expected: Dashed overlay curve; must match parameter_values length.
+        y_label: Y-axis label.
+        parameter_label: X-axis label.
+        observed_label / expected_label: Legend labels for each curve.
+        draw_cls_threshold: Force-draw threshold line regardless of series type.
+        cls_threshold: Y-value for threshold line (default 0.05).
+        logy: Logarithmic y-axis.
+        output_png / output_pdf: Output paths (default significance_cls.png if neither given).
+        n_sig / n_bkg / n_obs: Yields for summary mode (no plot produced).
 
-    Returns:
-        str: In array mode, a message listing all saved file paths. In numeric mode, a textual
-            summary with Z, p-value, and CLs metrics. Returns a descriptive error string on failure.
-
-    Notes:
-        - Provide exactly one of `significance`, `cls`, or `y` as the primary curve; supplying
-          more than one is an error.
-        - For a mass-scan workflow, call this tool once per plot type (significance, p-value, CLs)
-          and pass the observed series as the primary curve and the Asimov series as `expected`.
-        - To produce separate observed-only and expected-only plots, call twice with different
-          `output_png`/`output_pdf` paths.
-        - When `n_sig` and `n_bkg` are given, the tool returns text without creating any file.
+    Returns: Saved file paths (array mode) or stat text summary (summary mode), or error string.
     """
     if n_sig is not None and n_bkg is not None:
         from .utils import _stat_summary
@@ -402,7 +376,7 @@ def plot_significance_and_cls(
     try:
         parameter_data, series_data = _normalize_parallel_arrays("parameter_values", parameter_values, {"y": y_data})
     except ValueError as exc:
-        message = str(exc).replace("parameter_values", "parameter_values")
+        message = str(exc)
         if "y has length" in message:
             return "Error: parameter_values and y-data must have the same length."
         if message == "values must be finite numeric values":
@@ -443,7 +417,6 @@ def plot_significance_and_cls(
     ax.grid(True)
     ax.legend()
 
-    import os as _os
     if output_png:
         fig.savefig(output_png, bbox_inches="tight")
     if output_pdf:

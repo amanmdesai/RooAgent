@@ -31,38 +31,23 @@ def root_tree_to_histogram(
     output_root: Optional[str] = None,
     hist_name: Optional[str] = None,
 ) -> str:
-    """Project a TTree branch into a 1D histogram and save it to a ROOT file.
+    """Project a TTree branch into a TH1 and save it to a ROOT file.
 
-    This is the standard way to convert raw event-level ROOT data into a histogram that can
-    then be passed to histogram_significance_and_cls or plot tools. The histogram is saved
-    with the chosen `hist_name` so it can be retrieved by name in subsequent tool calls.
+    Use hist_name='sig'/'bkg' by convention so stat tools can find them.
 
     Args:
-        file_path (str): Input ROOT file containing the TTree.
-        tree_name (str): Name of the TTree to read.
-        variable (str): Branch name to histogram. Must be a numeric (scalar or vector) branch.
-        bins (int): Number of histogram bins.
-        xmin (float): Lower x-axis bound (left edge of first bin).
-        xmax (float): Upper x-axis bound (right edge of last bin).
-        cuts (List[str], optional): Ordered list of C++ boolean expressions applied before
-            filling the histogram. Events failing any cut are excluded.
-        vector_mode (str, optional): How to evaluate cuts on vector branches.
-            'any' (default): condition is satisfied if ANY element passes.
-            'all': condition is satisfied only if ALL elements pass.
-        weight (str, optional): Branch name or C++ expression used as per-event weight.
-            If the branch does not exist, falls back to unweighted counting.
-        output_root (str, optional): Path for the output ROOT file. Defaults to
-            '<input_stem>_<variable>_hist.root' in the same directory as the input.
-        hist_name (str, optional): Name to give the stored histogram (used to retrieve it later).
-            Defaults to 'h_<file_stem>_<variable>'.
+        file_path: Source ROOT file.
+        tree_name: TTree name inside the file.
+        variable: Branch to histogram.
+        bins: Number of bins.
+        xmin / xmax: Histogram axis range.
+        cuts: C++ boolean selection expressions.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        output_root: Output ROOT file path (default: '<input_stem>_<variable>_hist.root').
+        hist_name: Histogram name in output file (default: 'h_<stem>_<variable>').
 
-    Returns:
-        str: Confirmation message "Saved histogram '<name>' to <path>" or an error string.
-
-    Notes:
-        - Use this tool to prepare signal and background histograms for a mass-window counting
-          analysis before calling histogram_significance_and_cls.
-        - Set hist_name='sig' / hist_name='bkg' so the stat tool can find them by convention.
+    Returns: "Saved histogram '<name>' to <path>" or error string.
     """
     # Determine default histogram name if not provided
     stem = os.path.splitext(os.path.basename(file_path))[0]
@@ -100,26 +85,17 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "any",
                         weight: Optional[str] = None,
                         file_paths: Optional[List[str]] = None) -> str:
-    """Count events passing a selection cut in one or more ROOT files.
-
-    Evaluates a C++ boolean expression on a TTree and returns the (optionally weighted) event
-    yield. Vector-branch conditions are automatically rewritten using ROOT::VecOps::Any or
-    ROOT::VecOps::All depending on `vector_mode`.
+    """Count (weighted) events passing a C++ cut in one or more ROOT files.
 
     Args:
-        file_path (str): Primary ROOT file path. Pass an empty string if using `file_paths` only.
-            May also be a comma-separated list of file paths.
-        tree_name (str): Name of the TTree to evaluate the cut on.
-        cut (str): C++ boolean expression, e.g. "pt > 25 && abs(eta) < 2.4".
-        vector_mode (str, optional): How vector-branch conditions are handled.
-            'any' (default): satisfied if any element passes. 'all': all elements must pass.
-        weight (str, optional): Branch or expression used as per-event weight. If the column
-            does not exist in the dataframe, the tool silently falls back to unweighted counting.
-        file_paths (List[str], optional): Additional ROOT files merged with `file_path`.
+        file_path: ROOT file path; may be comma-separated for multiple files.
+        tree_name: TTree name.
+        cut: C++ boolean expression, e.g. "pt > 25 && abs(eta) < 2.4".
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        file_paths: Additional ROOT files merged with file_path.
 
-    Returns:
-        str: "yield=<N> cut='<expr>' files=<K>" where N is the (weighted) count and K is the
-            number of files processed. Returns an error string on failure.
+    Returns: "yield[w]=<N> cut='<expr>' files=<K>"
     """
 
     paths = _parse_paths(file_path, file_paths)
@@ -144,32 +120,20 @@ def compute_significance(signal_file: str,
                          vector_mode: str = "any",
                          weight: Optional[str] = None,
                          background_files: Optional[List[str]] = None) -> str:
-    """Compute discovery significance Z from signal and background yields after a cut selection.
+    """Compute discovery significance Z from S/B yields after a C++ cut (Asimov, no CLs).
 
-    Counts signal (S) and background (B) events passing the `cut` expression, then computes
-    the Poisson-based discovery significance Z using the Asimov approximation
-    (n_obs = round(S + B), background-only p-value = P(N ≥ n_obs | B)).
+    For histogram-based significance or CLs, use histogram_significance_and_cls instead.
 
     Args:
-        signal_file (str): ROOT file containing the signal TTree.
-        tree_name (str): TTree name shared by signal and background files.
-        cut (str): C++ boolean selection expression applied to both signal and background.
-        background_file (str, optional): Single background ROOT file path. May be a
-            comma-separated list of paths.
-        background_files (List[str], optional): Additional background ROOT files (merged with
-            `background_file` counts).
-        vector_mode (str, optional): How vector-branch conditions are evaluated ('any'/'all').
-        weight (str, optional): Per-event weight branch or expression.
+        signal_file: Signal ROOT file.
+        tree_name: TTree name.
+        cut: C++ boolean cut expression.
+        background_file: Background ROOT file; may be comma-separated.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        background_files: Additional background files merged with background_file.
 
-    Returns:
-        str: "S=<N> B=<N> Z=<value>" on success, or an error string. Z is the Gaussian
-            equivalent of the Poisson discovery p-value. Returns "Z=inf" when B = 0.
-
-    Notes:
-        - For histogram-based significance (after binning), use histogram_significance_and_cls
-          which also provides CLs exclusion metrics.
-        - This tool uses the Asimov expected count; pass observed data histograms to
-          histogram_significance_and_cls for observed Z.
+    Returns: "S=<N> B=<N> Z=<value>" or "Z=inf" when B=0, or error string.
     """
 
     vector_vars = _get_vector_branches(signal_file, tree_name)
@@ -201,29 +165,18 @@ def define_variable(
     expression: str,
     save_file: Optional[str] = None
 ) -> str:
-    """Add a derived branch to a TTree via a C++ expression and save the updated tree.
+    """Add a derived branch via C++ expression to a TTree and save to a new ROOT file.
 
-    Uses ROOT RDataFrame's Define() to compute a new column from an arbitrary C++ expression,
-    then snapshots the resulting tree to a new ROOT file. Useful for computing physics variables
-    (e.g. invariant mass, transverse momentum) from raw branches before analysis.
+    Confirm the new branch with inspect_root_data(mode='branches') after use.
 
     Args:
-        file_path (str): Input ROOT file containing the TTree.
-        tree_name (str): Name of the TTree to extend.
-        new_var_name (str): Name for the new derived branch (must be a valid C++ identifier).
-        expression (str): C++ expression evaluated per-event, e.g. "sqrt(px*px + py*py)".
-            All existing branches in the tree are in scope.
-        save_file (str, optional): Output ROOT file path. If omitted, defaults to
-            '<input_stem>_updated.root' in the same directory.
+        file_path: Source ROOT file.
+        tree_name: TTree name.
+        new_var_name: Name for the new branch.
+        expression: C++ expression referencing existing branches, e.g. "pt * cosh(eta)".
+        save_file: Output file path (default: '<input_stem>_updated.root').
 
-    Returns:
-        str: "New variable '<name>' defined and saved to '<path>'" or an error string.
-
-    Notes:
-        - After saving, use inspect_root_data(mode='branches') on the output file to confirm
-          the new branch is present before running downstream tools.
-        - To define multiple variables or immediately plot the result, use
-          define_variable_and_plot instead.
+    Returns: "New variable '<name>' defined and saved to '<path>'"
     """
 
     rdf = ROOT.RDataFrame(tree_name, file_path)
@@ -249,30 +202,21 @@ def define_variable_and_plot(file_path: str, tree_name: str,
                              cuts: Optional[List[str]] = None,
                              vector_mode: str = "any",
                              weight: Optional[str] = None) -> str:
-    """Define derived branches, apply cuts, and immediately plot one variable.
-
-    Combines variable definition (RDataFrame.Define), event selection (RDataFrame.Filter)
-    and histogram plotting into a single step. Use this when you want to visualise a newly
-    computed physics quantity without saving an intermediate ROOT file.
+    """Define one or more derived branches, apply cuts, and plot a variable — all in one step.
 
     Args:
-        file_path (str): Input ROOT file containing the TTree.
-        tree_name (str): TTree name to read.
-        new_variables (Dict[str, str]): Mapping from new branch name to C++ expression, e.g.
-            {"m_inv": "sqrt((e1+e2)*(e1+e2) - (px1+px2)*(px1+px2))"}.
-            Multiple variables may be defined; later definitions can reference earlier ones.
-        variable_to_plot (str): Name of the branch (existing or newly defined) to histogram.
-        bins (int): Number of histogram bins.
-        xmin (float): Lower x-axis bound.
-        xmax (float): Upper x-axis bound.
-        output_file (str): Path to save the plot (PDF or PNG).
-        cuts (List[str], optional): C++ selection expressions applied after all Define() calls.
-        vector_mode (str, optional): Vector-branch cut evaluation mode ('any'/'all').
-        weight (str, optional): Event weight branch or expression. Falls back to unweighted
-            counting if the branch is not found.
+        file_path: Source ROOT file.
+        tree_name: TTree name.
+        new_variables: Dict mapping new branch names to C++ expressions.
+        variable_to_plot: Branch (new or existing) to histogram and plot.
+        bins: Number of histogram bins.
+        xmin / xmax: Histogram axis range.
+        output_file: Path to save the output plot.
+        cuts: C++ boolean selection expressions applied after defining variables.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
 
-    Returns:
-        str: "Plot saved to <path>" on success, or an error string on failure.
+    Returns: "Plot saved to <path>"
     """
 
     df = ROOT.RDataFrame(tree_name, file_path)
@@ -327,35 +271,20 @@ def find_optimal_cut(signal_file: str,
                      vector_mode: str = "any",
                      weight: Optional[str] = None,
                      background_files: Optional[List[str]] = None) -> str:
-    """Scan a variable threshold and find the cut that maximises discovery significance.
-
-    Iterates over threshold values from `min_cut` to `max_cut` in steps of `step`, evaluating
-    signal (S) and background (B) yields at each threshold using `variable > threshold`. The
-    significance at each point is computed as S / sqrt(S + B) (Asimov approximation). Returns
-    the threshold that maximises this metric.
+    """Scan a variable threshold and return the value that maximises S/√(S+B) significance.
 
     Args:
-        signal_file (str): ROOT file containing signal events.
-        tree_name (str): TTree name shared by signal and background files.
-        variable (str): Branch name whose threshold is scanned (e.g. a BDT score or invariant mass).
-        min_cut (float): Starting threshold value.
-        max_cut (float): Ending threshold value (inclusive). Must be ≥ `min_cut`.
-        step (float): Increment between threshold values. Must be > 0.
-        background_file (str, optional): Single background ROOT file path.
-        background_files (List[str], optional): Additional background ROOT files.
-        base_cut (str, optional): Fixed C++ selection applied in addition to the scanned threshold.
-        vector_mode (str, optional): How vector-branch conditions are evaluated ('any'/'all').
-        weight (str, optional): Per-event weight branch or expression.
+        signal_file: Signal ROOT file.
+        tree_name: TTree name.
+        variable: Branch to scan with threshold cut (variable > threshold).
+        min_cut / max_cut / step: Scan range and step size.
+        background_file: Background ROOT file; may be comma-separated.
+        base_cut: Additional C++ pre-selection applied before each threshold cut.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        background_files: Additional background files merged with background_file.
 
-    Returns:
-        str: Multi-line report with the optimal threshold, S, B and significance at that point,
-            plus a summary of all scanned points. Returns an error string if step <= 0 or no
-            background files are provided.
-
-    Notes:
-        - Use this for quick cut optimisation on a single variable. For a full parameter scan
-          producing significance vs mass plots, use histogram_significance_and_cls in a loop
-          followed by summarize_parameter_scan and plot_significance_and_cls.
+    Returns: Best threshold with S, B, significance, or error string.
     """
 
     bkg_paths = _parse_paths(background_file, background_files)
@@ -421,33 +350,19 @@ def generate_cutflow(
     file_path: Optional[str] = None,
     file_paths: Optional[List[str]] = None,
 ) -> str:
-    """Build a sequential cutflow table showing event yields after each ordered cut.
+    """Build a sequential cutflow table showing event yields after each cumulative cut.
 
-    Applies the `cuts` list sequentially (each cut is cumulative — events must pass ALL
-    preceding cuts to reach the next) and reports the yield at each stage. The output
-    includes a per-file breakdown (to compare individual samples) and a merged total
-    across all provided files.
+    Use before apply_cut_and_count or compute_significance to understand selection efficiency.
 
     Args:
-        tree_name (str): TTree name present in all provided files.
-        cuts (List[str]): Ordered list of C++ boolean expressions applied sequentially.
-            Example: ["pt > 20", "abs(eta) < 2.5", "m > 120 && m < 130"].
-        vector_mode (str, optional): How vector-branch conditions are evaluated ('any'/'all').
-        weight (str, optional): Per-event weight branch or expression. Falls back to
-            unweighted counting if the branch does not exist.
-        file_path (str, optional): Primary ROOT file. May be a comma-separated list.
-        file_paths (List[str], optional): Additional ROOT files merged with `file_path`.
+        tree_name: TTree name present in all files.
+        cuts: Ordered C++ boolean expressions applied cumulatively.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        file_path: ROOT file path; may be comma-separated.
+        file_paths: Additional ROOT files merged with file_path.
 
-    Returns:
-        str: Human-readable report with sections:
-            - "Cutflow (per-file):" — one block per file showing initial count + yield after each cut.
-            - "Combined cutflow (merged):" — aggregate across all files.
-        Returns an error string if no files are provided.
-
-    Notes:
-        - Use this as the first tool after file discovery to understand selection efficiency
-          before choosing working points for apply_cut_and_count or compute_significance.
-        - The initial counts should match apply_cut_and_count with cut="1==1" for each file.
+    Returns: Per-file and combined cutflow tables with yields at each stage, or error string.
     """
     paths = _parse_paths(file_path, file_paths)
     if not paths:

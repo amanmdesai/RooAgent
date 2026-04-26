@@ -14,42 +14,19 @@ def inspect_root_data(
     file_path: str = "",
     tree_name: str = "",
 ) -> str:
-    """Inspect ROOT files and enumerate available objects (files, trees, branches, contents).
-
-    This is the entry point for any analysis — call it first to discover what data is available
-    before running any other tool. Different modes expose progressively deeper information:
-
-    - **"summary"** (default): List every .root file in `directory` with its top-level TTree
-      names. Use this to quickly orient yourself when the user has not specified a file.
-    - **"files"**: List all .root file names in `directory` without opening them.
-    - **"contents"**: Recursively list ALL objects (histograms, trees, directories) inside a
-      specific `file_path` with their ROOT class names. Use this when you need to know what
-      histograms exist before calling histogram tools.
-    - **"trees"**: List the TTree names inside a specific `file_path`.
-    - **"branches"**: List all branch names and their data types inside a given `tree_name` in
-      `file_path`. Always call this before constructing cut expressions or variable names to
-      avoid typos.
+    """Inspect ROOT files and their contents. Always call summary first, then branches before writing cuts.
 
     Args:
-        mode (str, optional): Inspection mode — one of 'summary', 'files', 'contents', 'trees',
-            'branches'. Default is 'summary'.
-        directory (str, optional): Folder to search for .root files; used with modes 'files' and
-            'summary'. Defaults to the current working directory.
-        file_path (str, optional): Specific ROOT file to inspect; required for modes 'contents',
-            'trees', and 'branches'.
-        tree_name (str, optional): TTree name inside the file; required for mode 'branches'.
+        mode: 'summary' — all .root files + TTree names in directory (start here).
+              'files' — filenames only.
+              'contents' — all objects in file_path.
+              'trees' — TTree names in file_path.
+              'branches' — branch names+types for tree_name in file_path (required before any cuts).
+        directory: Directory to scan (default '.'; used by summary/files modes).
+        file_path: ROOT file path (required for contents/trees/branches modes).
+        tree_name: TTree name (required for branches mode).
 
-    Returns:
-        str: Human-readable listing of files, trees, branches, or object contents depending on
-            the selected mode. Returns a descriptive error string when required arguments are
-            missing or the file cannot be opened.
-
-    Notes:
-        - Start every new analysis with inspect_root_data(mode='summary') to discover available
-          ROOT files, then drill down with mode='branches' to confirm variable names.
-        - When mode='branches' is needed, both `file_path` and `tree_name` must be provided.
-        - The output of this tool is human-readable text only; use other tools to compute
-          numeric results.
+    Returns: Formatted text listing files, trees, branches, or contents; or error string.
     """
     mode_key = (mode or "summary").strip().lower()
 

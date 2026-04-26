@@ -16,38 +16,20 @@ def fit_distribution(
     xmax: float = 1.0,
     hist_name: str = "",
 ) -> str:
-    """Fit a ROOT function to a 1D distribution obtained from a TTree branch or a stored histogram.
-
-    Supports two data sources:
-    - **'tree'**: builds a histogram from a TTree branch on-the-fly, then fits it.
-    - **'hist'**: reads an existing TH1 from a ROOT file and fits it directly.
-
-    The fit is performed using ROOT's TH1::Fit and the result is plotted to a canvas saved
-    as `output_plot`. Both fitted parameter values and goodness-of-fit (chi²/ndf) are returned.
+    """Fit a ROOT function to a TTree branch or stored TH1 and save a plot.
 
     Args:
-        source (str): Data source — 'tree' (branch-to-histogram) or 'hist' (stored TH1).
-        fit_function (str): ROOT TF1 function name or expression. Built-in names include
-            'gaus', 'landau', 'expo', 'pol0' … 'pol9'. Custom expressions use standard
-            C++ syntax, e.g. "[0]*exp(-[1]*x)".
-        output_plot (str): Path to save the fitted plot canvas (PDF or PNG).
-        file_path (str): ROOT file containing the source data.
-        tree_name (str, optional): TTree name — required when source='tree'.
-        variable (str, optional): Branch name to histogram — required when source='tree'.
-        bins (int, optional): Number of bins for the histogram when source='tree' (default 50).
-        xmin (float, optional): Lower x bound for the histogram when source='tree' (default 0.0).
-        xmax (float, optional): Upper x bound for the histogram when source='tree' (default 1.0).
-        hist_name (str, optional): Stored histogram name — required when source='hist'.
+        source: 'tree' — builds histogram from tree_name+variable, then fits.
+                'hist' — reads hist_name from file_path and fits directly.
+        fit_function: ROOT built-in ('gaus', 'landau', 'expo', 'pol0'..'pol9') or C++ expression.
+        output_plot: Path to save the output plot.
+        file_path: ROOT file path.
+        tree_name: TTree name (required when source='tree').
+        variable: Branch to histogram (required when source='tree').
+        bins / xmin / xmax: Histogram binning for source='tree'.
+        hist_name: Histogram name (required when source='hist').
 
-    Returns:
-        str: "Fit <function> [<label>]: p0=<v>, p1=<v>, ... chi2/ndf=<chi2>/<ndf>" on success,
-            or a descriptive error string when required arguments are missing or the fit fails.
-
-    Notes:
-        - Choose `xmin`/`xmax` to cover the distribution of interest; fitting outside the
-          data range produces unreliable parameter estimates.
-        - For narrow resonance fits (e.g. a Gaussian peak), set bins to 30-100 and
-          xmin/xmax to a few widths around the expected peak.
+    Returns: \"Fit <func> [<label>]: p0=<v>, ... chi2/ndf=<v>/<v>\" or error string.
     """
     source_key = (source or "").strip().lower()
 

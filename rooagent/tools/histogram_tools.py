@@ -8,21 +8,14 @@ from .utils import _load_hist
 
 @tool
 def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
-    """Extract basic descriptive statistics from a 1D histogram stored in a ROOT file.
-
-    Reads the named TH1 histogram from `file_path`, optionally rebins it, and returns the
-    mean, RMS (standard deviation) and total number of entries. This is a quick sanity check
-    to verify that a histogram was filled correctly before running integrals or fits.
+    """Return mean, RMS, and entries of a TH1 from a ROOT file.
 
     Args:
-        file_path (str): Path to the ROOT file containing the histogram.
-        hist_name (str): Name of the TH1 histogram to query.
-        rebin (int, optional): Merge every `rebin` consecutive bins before computing statistics
-            (default 1, no rebinning). Useful for smoothing noisy distributions.
+        file_path: Path to ROOT file.
+        hist_name: Histogram name inside the file.
+        rebin: Merge bins before computing stats (default 1 = no rebin).
 
-    Returns:
-        str: A formatted string like "<hist_name> -> Mean: <m>, RMS: <r>, Entries: <n>" or
-            an error message if the file or histogram cannot be found.
+    Returns: "<name> -> Mean: <v>, RMS: <v>, Entries: <N>" or error string.
     """
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
@@ -43,30 +36,17 @@ def histogram_integral(
     include_overflow: bool = False,
     rebin: int = 1,
 ) -> str:
-    """Integrate a 1D histogram over a specified x-range and return the integral with uncertainty.
-
-    The integral is computed over the half-open interval [x_low, x_high) by summing bin contents
-    (weighted by the fractional overlap when boundaries fall inside a bin). This is useful for
-    computing event yields in a signal window or sideband region from a stored histogram.
+    """Integrate a TH1 over [x_low, x_high) and return value±error.
 
     Args:
-        file_path (str): Path to the ROOT file containing the histogram.
-        hist_name (str): Name of the TH1 histogram to integrate.
-        x_low (float): Lower integration bound (inclusive).
-        x_high (float): Upper integration bound (exclusive). Must be strictly greater than `x_low`.
-        include_overflow (bool, optional): Include under/overflow bins in the sum (default False).
-        rebin (int, optional): Merge every `rebin` bins before integrating (default 1).
+        file_path: Path to ROOT file.
+        hist_name: Histogram name.
+        x_low: Lower edge of integration range.
+        x_high: Upper edge (exclusive; clipped to axis bounds with warning).
+        include_overflow: Include under/overflow bins (default False).
+        rebin: Merge bins before integrating (default 1).
 
-    Returns:
-        str: Result in the form
-            "Integral '<name>' x=[lo,hi] bins=[b1,b2]: <value>+-<error>"
-        Returns a descriptive error string when x_low ≥ x_high, the range lies entirely outside
-        the histogram axis, or the file/histogram cannot be opened.
-
-    Notes:
-        - x boundaries are clamped to the histogram axis range with a warning appended to the output.
-        - Use histogram_significance_and_cls instead when you need significance or CLs from a window,
-          as it handles fractional bin contributions automatically.
+    Returns: "Integral '<name>' x=[lo,hi] bins=[lo,hi]: <val>±<err>" or error string.
     """
     h, err = _load_hist(file_path, hist_name, rebin)
     if err:
