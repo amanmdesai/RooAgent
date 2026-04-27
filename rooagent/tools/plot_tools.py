@@ -49,6 +49,7 @@ def plot(
     data_file: str = "",
     data_label: str = "Data",
     plot_data: bool = False,
+    stack_signal: bool = True,
 ):
     """Plot 1D distributions from histograms or TTree branches.
 
@@ -57,30 +58,36 @@ def plot(
       'tree'             → file_path, tree_name, variable
       'tree_compare'     → file_paths, tree_name, variables, legends
       'hist_compare'     → file_paths, hist_names, legends
-      'signal_background'→ signal_file (or signal_files), background_files, tree_name, variable
+      'signal_background'→ background_files, tree_name, variable; signal_file optional
+
+    signal_background drawing:
+      stack_signal=True (default): backgrounds + signal both in the stack; data overlaid as points.
+      stack_signal=False: only backgrounds stacked; signal(s) drawn as separate overlaid lines; data overlaid as points.
+      Signal files are optional — omit to plot backgrounds + data only.
 
     Args:
         mode: Plotting mode (see above).
         output_pdf: Output PDF path.
         file_path: Single ROOT file (hist/tree modes).
-        file_paths: Multiple ROOT files (compare/signal_background modes).
+        file_paths: Multiple ROOT files (compare modes).
         hist_name / hist_names: Histogram name(s) for hist modes.
-        tree_name: TTree name for tree modes.
-        variable / variables: Branch(es) to plot.
-        legends: Labels parallel to file_paths/hist_names (required for compare modes).
+        tree_name: TTree name for tree-based modes.
+        variable / variables: Branch(es) to histogram.
+        legends: Labels matching file_paths/hist_names (compare modes).
         xlabel / ylabel: Axis labels.
-        bins / xmin / xmax: Binning for tree→hist conversion.
+        bins / xmin / xmax: Histogram binning.
         logy: Logarithmic y-axis.
-        normalize: Normalize before plotting.
-        show_ratio: Show ratio subplot (compare modes).
-        rebin: Rebin factor.
-        weight_branch: Per-event weight branch or expression.
-        cuts: C++ selection expressions.
-        vector_mode: 'any'(default) or 'all' for vector-branch cuts.
-        apply_cuts_before_plot: Set False to skip provided cuts.
-        signal_file / signal_files / signal_label / signal_labels: Signal inputs (signal_background mode).
-        background_files / background_labels: Background inputs (signal_background mode).
-        data_file / data_label / plot_data: Optional data overlay (signal_background mode).
+        normalize: Normalize each histogram before plotting.
+        show_ratio: Show ratio sub-panel below the main plot.
+        rebin: Rebin factor applied to all histograms.
+        weight_branch: Per-event weight branch or C++ expression.
+        cuts: Ordered C++ boolean selection expressions (applied sequentially).
+        vector_mode: 'any' (default) or 'all' for vector-branch cut evaluation.
+        apply_cuts_before_plot: Set False to disable cut application.
+        signal_file / signal_files / signal_label / signal_labels: Signal inputs.
+        background_files / background_labels: Background inputs.
+        data_file / data_label / plot_data: Optional observed-data overlay.
+        stack_signal: When False, signals are overlaid as lines instead of stacked.
 
     Returns: Confirmation with saved path, or error string.
     """
@@ -180,6 +187,7 @@ def plot(
             cuts=cuts,
             vector_mode=vector_mode,
             apply_cuts_before_plot=apply_cuts_before_plot,
+            stack_signal=stack_signal,
         )
 
     return "Error: unsupported mode. Use one of: hist, tree, tree_compare, hist_compare, signal_background."

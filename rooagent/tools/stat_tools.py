@@ -21,20 +21,23 @@ def histogram_significance_and_cls(
 ) -> str:
     """Compute discovery Z and/or CLs from signal/background/data histograms in a mass window.
 
+    Use for histogram-based analyses after building histograms with root_tree_to_histogram.
+    Name histograms 'sig' and 'bkg' by convention so this tool finds them automatically.
+
     compute_cls=False (default): discovery only (p0, Z). Use for all discovery analyses.
-    compute_cls=True: adds exclusion stats (CLs, CLs+b, CLb). Use only for exclusion.
-    CLs is NOT a discovery metric — small CLs means excluded, not discovered.
+    compute_cls=True: also computes CLs, CLs+b, CLb. Use only for exclusion studies.
+    Note: small CLs means the signal is excluded, NOT discovered.
 
     Args:
-        file_path: ROOT file containing signal/background (and optionally data) histograms.
-        data_name: Histogram name for observed data; enables observed line alongside Asimov.
+        file_path: ROOT file containing the signal and background (and optionally data) histograms.
+        data_name: Histogram name for observed data; enables observed stats alongside Asimov.
         bkg_name: Background histogram name (default 'bkg').
         sig_name: Signal histogram name (default 'sig').
-        center: Window center; defaults to histogram midpoint.
-        window: Half-width of counting window; defaults to full half-range.
-        compute_cls: Set True for exclusion analyses to also compute CLs.
+        center: Window centre; defaults to histogram midpoint.
+        window: Half-width of counting window; defaults to full histogram half-range.
+        compute_cls: Set True to also compute exclusion CLs.
 
-    Returns: Header with yield info + stat summary, or error string.
+    Returns: Header with yields and stat summary, or error string.
     """
     inputs, err = _counting_window_inputs(
         file_path=file_path,
@@ -77,17 +80,21 @@ def summarize_parameter_scan(
     top_n: int = 5,
     descending: Optional[bool] = None,
 ) -> str:
-    """Rank and summarize parameter-scan results from index-aligned arrays. Always call after a parameter scan.
+    """Rank and summarize results from a parameter scan. Always call after running a multi-point scan.
+
+    Pass arrays via the series dict (e.g. series={"significance": [...]}) or use the
+    legacy convenience kwargs (significance=..., cls=..., pvalue=...). Arrays must be
+    index-aligned with parameter_values.
 
     Args:
-        parameter_values: Scan parameter values (x-axis).
+        parameter_values: Scan parameter x-axis values.
         series: Dict of named result arrays, e.g. {"significance": [...], "cls": [...]}.
-        significance / cls / pvalue / observed_* / expected_*: Legacy single-array aliases for series.
+        significance / cls / pvalue / observed_* / expected_*: Aliases for series entries.
         parameter_name: Label for the scan variable.
-        parameter_unit: Units string appended to parameter label.
-        sort_by: Series key to rank by; defaults to first significance-like key (descending) or cls/pvalue (ascending).
-        top_n: Number of top results to show (default 5).
-        descending: Override sort direction (auto-detected from key type if omitted).
+        parameter_unit: Units string appended to the parameter label.
+        sort_by: Series key to rank by; auto-detected from key type if omitted.
+        top_n: Number of top candidates to display (default 5).
+        descending: Override sort direction (auto-detected from key name if omitted).
 
     Returns: Ranked table of top scan points, or error string.
     """

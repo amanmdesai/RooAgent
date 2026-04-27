@@ -31,17 +31,18 @@ def root_tree_to_histogram(
     output_root: Optional[str] = None,
     hist_name: Optional[str] = None,
 ) -> str:
-    """Project a TTree branch into a TH1 and save it to a ROOT file.
+    """Project a TTree branch into a TH1 histogram and save it to a ROOT file.
 
-    Use hist_name='sig'/'bkg' by convention so stat tools can find them.
+    Name the histogram 'sig' or 'bkg' by convention so that histogram_significance_and_cls
+    can find them without extra arguments.
 
     Args:
         file_path: Source ROOT file.
         tree_name: TTree name inside the file.
-        variable: Branch to histogram.
-        bins: Number of bins.
+        variable: Branch name to histogram.
+        bins: Number of histogram bins.
         xmin / xmax: Histogram axis range.
-        cuts: C++ boolean selection expressions.
+        cuts: Ordered C++ boolean selection expressions (applied sequentially).
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
         output_root: Output ROOT file path (default: '<input_stem>_<variable>_hist.root').
@@ -85,7 +86,10 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "any",
                         weight: Optional[str] = None,
                         file_paths: Optional[List[str]] = None) -> str:
-    """Count (weighted) events passing a C++ cut in one or more ROOT files.
+    """Count (weighted) events passing a C++ selection in one or more ROOT files.
+
+    For sequential multi-condition selections, use generate_cutflow instead, which
+    applies cuts one by one and avoids operator-precedence pitfalls.
 
     Args:
         file_path: ROOT file path; may be comma-separated for multiple files.
@@ -115,19 +119,25 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
 @tool
 def compute_significance(signal_file: str,
                          tree_name: str,
-                         cut: str,
+                         cut: str = "",
                          background_file: str = "",
                          vector_mode: str = "any",
                          weight: Optional[str] = None,
-                         background_files: Optional[List[str]] = None) -> str:
-    """Compute discovery significance Z from S/B yields after a C++ cut (Asimov, no CLs).
+                         background_files: Optional[List[str]] = None,
+                         cuts: Optional[List[str]] = None) -> str:
+    """Compute discovery significance Z from signal/background yields (Asimov, no CLs).
+
+    Prefer passing cuts as a list via `cuts` to avoid C++ operator-precedence problems
+    when combining OR/AND conditions. When `cuts` is provided, each element is applied
+    as a separate sequential filter — equivalent to how generate_cutflow works.
 
     For histogram-based significance or CLs, use histogram_significance_and_cls instead.
 
     Args:
         signal_file: Signal ROOT file.
         tree_name: TTree name.
-        cut: C++ boolean cut expression.
+        cut: Single combined C++ boolean expression (use only for simple, single-condition cuts).
+        cuts: Ordered list of C++ boolean expressions applied sequentially (preferred over cut).
         background_file: Background ROOT file; may be comma-separated.
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
@@ -136,18 +146,27 @@ def compute_significance(signal_file: str,
     Returns: "S=<N> B=<N> Z=<value>" or "Z=inf" when B=0, or error string.
     """
 
-    vector_vars = _get_vector_branches(signal_file, tree_name)
-    cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
-
     bkg_paths = _parse_paths(background_file, background_files)
     if not bkg_paths:
         return "Error: no background file(s) provided."
 
+    vector_vars = _get_vector_branches(signal_file, tree_name)
     sig_df = ROOT.RDataFrame(tree_name, signal_file)
     bkg_df = _build_dataframe(tree_name, bkg_paths)
 
-    S = _filtered_yield(sig_df, cut, weight)
-    B = _filtered_yield(bkg_df, cut, weight)
+    if cuts:
+        for c in cuts:
+            safe_c = _rewrite_vector_cut(c, vector_vars, vector_mode)
+            sig_df = sig_df.Filter(safe_c)
+            bkg_df = bkg_df.Filter(safe_c)
+        S = _total_yield(sig_df, weight)
+        B = _total_yield(bkg_df, weight)
+    elif cut:
+        safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
+        S = _filtered_yield(sig_df, safe_cut, weight)
+        B = _filtered_yield(bkg_df, safe_cut, weight)
+    else:
+        return "Error: provide cut (string) or cuts (list of strings)."
 
     if B <= 0 and S <= 0:
         return "No events after cuts; significance undefined."
@@ -271,20 +290,24 @@ def find_optimal_cut(signal_file: str,
                      vector_mode: str = "any",
                      weight: Optional[str] = None,
                      background_files: Optional[List[str]] = None) -> str:
-    """Scan a variable threshold and return the value that maximises S/√(S+B) significance.
+    """Scan a variable threshold and return the value that maximises S/√(S+B).
+
+    Iterates threshold from min_cut to max_cut in steps of step, applying
+    variable > threshold (plus optional base_cut) to both signal and background.
+    Use summarize_parameter_scan afterwards when comparing multiple scan results.
 
     Args:
         signal_file: Signal ROOT file.
         tree_name: TTree name.
-        variable: Branch to scan with threshold cut (variable > threshold).
+        variable: Branch to scan (cut applied as variable > threshold).
         min_cut / max_cut / step: Scan range and step size.
         background_file: Background ROOT file; may be comma-separated.
-        base_cut: Additional C++ pre-selection applied before each threshold cut.
+        base_cut: Additional C++ pre-selection applied before the threshold cut.
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
         background_files: Additional background files merged with background_file.
 
-    Returns: Best threshold with S, B, significance, or error string.
+    Returns: Best threshold with S, B, and significance, or error string.
     """
 
     bkg_paths = _parse_paths(background_file, background_files)
@@ -352,11 +375,15 @@ def generate_cutflow(
 ) -> str:
     """Build a sequential cutflow table showing event yields after each cumulative cut.
 
-    Use before apply_cut_and_count or compute_significance to understand selection efficiency.
+    Each cut in the list is applied as a separate filter, so mixed &&/|| conditions
+    are handled correctly without operator-precedence issues. Outputs one block per
+    file, then a combined merged summary.
+
+    Use before compute_significance to verify the selection is behaving as expected.
 
     Args:
         tree_name: TTree name present in all files.
-        cuts: Ordered C++ boolean expressions applied cumulatively.
+        cuts: Ordered C++ boolean expressions applied cumulatively (one per step).
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
         file_path: ROOT file path; may be comma-separated.
@@ -408,3 +435,59 @@ def generate_cutflow(
     # Concatenate per-file sections then combined summary
     output_sections = ["Cutflow (per-file):"] + per_file_sections + ["", combined_section]
     return "\n\n".join(output_sections)
+
+
+@tool
+def compute_efficiency(
+    file_path: str,
+    tree_name: str,
+    numerator_cut: str,
+    denominator_cut: str = "",
+    vector_mode: str = "any",
+    weight: Optional[str] = None,
+    file_paths: Optional[List[str]] = None,
+) -> str:
+    """Compute selection efficiency = (events passing numerator_cut) / (events passing denominator_cut).
+
+    Use to evaluate trigger efficiency, cut acceptance, or turn-on curves for any selection.
+    When denominator_cut is omitted, the denominator is all events in the file.
+    Uncertainty is the binomial statistical error sqrt(p*(1-p)/N).
+
+    Args:
+        file_path: ROOT file path; may be comma-separated.
+        tree_name: TTree name.
+        numerator_cut: C++ boolean expression for the tighter selection.
+        denominator_cut: C++ boolean expression for the looser selection; omit for all events.
+        vector_mode: How vector-branch cuts are evaluated ('any'/'all').
+        weight: Per-event weight branch or expression.
+        file_paths: Additional ROOT files merged with file_path.
+
+    Returns: "eff=<num>/<den>=<val>±<err> files=<K>" or error string.
+    """
+    import math as _math
+
+    paths = _parse_paths(file_path, file_paths)
+    if not paths:
+        return "Error: no file(s) provided."
+
+    vector_vars = _get_vector_branches(paths[0], tree_name)
+    num_cut = _rewrite_vector_cut(numerator_cut, vector_vars, vector_mode)
+    den_cut_raw = (denominator_cut or "").strip()
+    den_cut = _rewrite_vector_cut(den_cut_raw, vector_vars, vector_mode) if den_cut_raw else ""
+
+    df = _build_dataframe(tree_name, paths)
+    denom_df = df.Filter(den_cut) if den_cut else df
+    denom = _total_yield(denom_df, weight)
+
+    if denom <= 0:
+        return "Error: denominator yield is zero; check denominator_cut or input files."
+
+    num_df = denom_df.Filter(num_cut)
+    numer = _total_yield(num_df, weight)
+
+    eff = numer / denom
+    eff_clamped = max(0.0, min(1.0, eff))
+    err = _math.sqrt(eff_clamped * (1.0 - eff_clamped) / max(1.0, denom))
+
+    w_tag = "(w)" if weight else ""
+    return f"eff{w_tag}={numer:.4g}/{denom:.4g}={eff:.4f}±{err:.4f} files={len(paths)}"

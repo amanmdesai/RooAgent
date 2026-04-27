@@ -8,7 +8,7 @@ from .utils import _load_hist
 
 @tool
 def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
-    """Return mean, RMS, and entries of a TH1 from a ROOT file.
+    """Return mean, RMS, and entry count of a TH1 from a ROOT file.
 
     Args:
         file_path: Path to ROOT file.

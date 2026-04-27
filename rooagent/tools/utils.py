@@ -876,18 +876,21 @@ def _plot_signal_vs_backgrounds(
     cuts: Optional[List[str]],
     vector_mode: str,
     apply_cuts_before_plot: bool = True,
+    stack_signal: bool = True,
 ):
-    # Produce a signal-vs-stacked-backgrounds comparison plot with an optional data overlay and S/B ratio panel.
+    # Produce a stacked-backgrounds plot with optional signal overlay and data points.
+    # stack_signal=True (default): signal is added to the stack on top of backgrounds.
+    # stack_signal=False: backgrounds are stacked; signals are overlaid as separate lines.
     signal_paths = _parse_paths(signal_file, signal_files)
-    if not signal_paths:
-        return "Error: at least one signal file must be provided via signal_file or signal_files."
 
     background_paths = _parse_paths(additional=background_files)
     if not background_paths:
         return "Error: background_files cannot be empty."
 
     if signal_labels is None:
-        if len(signal_paths) == 1:
+        if not signal_paths:
+            signal_labels = []
+        elif len(signal_paths) == 1:
             signal_labels = [Path(signal_paths[0]).stem if signal_label == "Signal" else signal_label]
         else:
             signal_labels = [Path(p).stem for p in signal_paths]
@@ -1005,9 +1008,11 @@ def _plot_signal_vs_backgrounds(
         if data_hist and data_hist.Integral() > 0:
             data_hist.Scale(1.0 / data_hist.Integral())
 
-    use_stack = wants_data and not normalize
+    # Drawing mode: full-stack (bkg+sig stacked), bkg-stack (bkg stacked, sig as lines), or overlay.
+    use_full_stack = wants_data and not normalize and stack_signal and bool(signal_hists)
+    use_bkg_stack = wants_data and not normalize and (not stack_signal) and bool(background_hists)
 
-    if use_stack:
+    if use_full_stack:
         for i, h in enumerate(signal_hists):
             line_color = signal_line_colors[i % len(signal_line_colors)]
             h.SetFillStyle(signal_hatch_styles[i % len(signal_hatch_styles)])
@@ -1025,7 +1030,7 @@ def _plot_signal_vs_backgrounds(
     if data_hist:
         legend.AddEntry(data_hist, data_label, "lep")
 
-    sig_legend_opt = "f" if use_stack else "l"
+    sig_legend_opt = "f" if use_full_stack else "l"
     for h, label in reversed(list(zip(signal_hists, signal_labels))):
         legend.AddEntry(h, label, sig_legend_opt)
 
@@ -1039,7 +1044,7 @@ def _plot_signal_vs_backgrounds(
     draw_pad = upper_pad if upper_pad else canvas
     draw_pad.cd()
 
-    if not use_stack:
+    if not use_full_stack and not use_bkg_stack:
         hist_list = background_hists + signal_hists + ([data_hist] if data_hist else [])
         draw_options = ["HIST"] * (len(background_hists) + len(signal_hists))
         if data_hist:
@@ -1092,6 +1097,80 @@ def _plot_signal_vs_backgrounds(
 
         return f"Saved signal-vs-background comparison to {output_pdf}"
 
+    if use_bkg_stack:
+        # Backgrounds only in the stack; signals drawn as separate lines on top.
+        bkg_stack = ROOT.THStack("hs_bkg_only", "")
+        ROOT.SetOwnership(bkg_stack, False)
+        for h in background_hists:
+            bkg_stack.Add(h)
+
+        draw_pad.cd()
+        bkg_stack.Draw("HIST")
+        bkg_stack.GetXaxis().SetTitle(variable)
+        bkg_stack.GetYaxis().SetTitle(y_title)
+        if show_ratio:
+            bkg_stack.GetXaxis().SetLabelSize(0)
+            bkg_stack.GetXaxis().SetTitleSize(0)
+            bkg_stack.GetYaxis().SetTitleSize(0.055)
+            bkg_stack.GetYaxis().SetLabelSize(0.045)
+
+        sig_max = max((h.GetMaximum() for h in signal_hists), default=0.0)
+        data_max = data_hist.GetMaximum() if data_hist else 0.0
+        bkg_stack.SetMaximum(max(bkg_stack.GetMaximum(), sig_max, data_max) * 1.35)
+
+        # MC stat band (backgrounds only)
+        bkg_band = background_hists[0].Clone("h_bkg_stat_band")
+        bkg_band.SetDirectory(0)
+        ROOT.SetOwnership(bkg_band, False)
+        for h in background_hists[1:]:
+            bkg_band.Add(h)
+        bkg_band.SetFillStyle(3354)
+        bkg_band.SetFillColor(ROOT.kGray + 2)
+        bkg_band.SetLineColor(ROOT.kGray + 2)
+        bkg_band.SetMarkerSize(0)
+        bkg_band.Draw("E2 SAME")
+
+        for h in signal_hists:
+            h.Draw("HIST SAME")
+
+        if data_hist:
+            data_hist.Draw("PE1 SAME")
+
+        legend.Draw()
+
+        if show_ratio and lower_pad is not None:
+            total_bkg = background_hists[0].Clone("h_total_bkg_for_ratio")
+            total_bkg.SetDirectory(0)
+            ROOT.SetOwnership(total_bkg, False)
+            for h in background_hists[1:]:
+                total_bkg.Add(h)
+
+            lower_pad.cd()
+            if data_hist:
+                ratio = data_hist.Clone("h_data_bkg_ratio")
+                ratio.SetDirectory(0)
+                ROOT.SetOwnership(ratio, False)
+                ratio.Divide(data_hist, total_bkg, 1.0, 1.0, "B")
+                _style_ratio_hist(ratio, variable, "Data/Bkg")
+                ratio.Draw("PE1")
+            elif signal_hists:
+                ratio = _build_signal_background_ratio(signal_hists[0], background_hists)
+                _style_ratio_hist(ratio, variable, "Sig/Bkg")
+                ratio.Draw("HIST")
+
+            if data_hist or signal_hists:
+                x_axis = ratio.GetXaxis()
+                unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+                ROOT.SetOwnership(unity, False)
+                unity.SetLineStyle(2)
+                unity.SetLineColor(ROOT.kGray + 2)
+                unity.Draw()
+
+        canvas.Update()
+        canvas.SaveAs(output_pdf)
+        return f"Saved signal-vs-background comparison to {output_pdf}"
+
+    # use_full_stack: backgrounds + signals both in the stack, data overlay
     stack = ROOT.THStack("hs_sig_bkg", "")
     ROOT.SetOwnership(stack, False)
     for h in background_hists:
