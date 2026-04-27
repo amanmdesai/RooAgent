@@ -230,7 +230,7 @@ def _default_scan_sort(series_names: List[str]) -> str:
 def _scan_sort_descending(series_name: str) -> bool:
     # Return True if larger values are better for this series (e.g. Z), False if smaller is better (e.g. CLs, p0).
     lowered = series_name.lower().replace("_", " ")
-    lower_better_tokens = ("cls", "p0", "pvalue", "p-value", "p value", "mu up", "yield up")
+    lower_better_tokens = ("cls", "p0",  "p value",  "yield up")
     return not any(token in lowered for token in lower_better_tokens)
 
 
