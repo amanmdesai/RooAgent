@@ -1,3 +1,4 @@
+from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langchain.messages import HumanMessage, SystemMessage, AnyMessage, ToolMessage
@@ -83,15 +84,16 @@ DEFAULT_MODEL_NAME = "openai/gpt-4.1"
 MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
 DEFAULT_SEED = int(os.getenv("ROOAGENT_SEED", "7"))
 
-model = ChatOpenAI(
-    model=MODEL_NAME,
-    api_key=os.getenv("GITHUB_TOKEN"),
-    base_url="https://models.github.ai/inference",
-    temperature=0,
-    seed=DEFAULT_SEED,
-    top_p=1,
-)
+# model = ChatOpenAI(
+#     model=MODEL_NAME,
+#     api_key=os.getenv("GITHUB_TOKEN"),
+#     base_url="https://models.github.ai/inference",
+#     temperature=0,
+#     seed=DEFAULT_SEED,
+#     top_p=1,
+# )
 
+model = ChatOllama(model="qwen3.5:cloud", temperature=0, seed=DEFAULT_SEED)
 
 tools = [
     inspect_root_data,
@@ -152,7 +154,7 @@ def llm_call(state: MessagesState):
 
     parallel_requested = _user_requested_parallel_tools(state)
 
-    model_with_tools = model.bind_tools(tools, parallel_tool_calls=parallel_requested)
+    model_with_tools = model.bind_tools(tools)# parallel_tool_calls=parallel_requested)
 
     response = model_with_tools.invoke(prompt_messages)
 
