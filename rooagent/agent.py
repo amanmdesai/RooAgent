@@ -93,7 +93,7 @@ DEFAULT_SEED = int(os.getenv("ROOAGENT_SEED", "7"))
 #     top_p=1,
 # )
 
-model = ChatOllama(model="qwen3.5:cloud", temperature=0, seed=DEFAULT_SEED)
+model = ChatOllama(model="deepseek-v3.1:671b-cloud", temperature=0, seed=DEFAULT_SEED)
 
 tools = [
     inspect_root_data,
