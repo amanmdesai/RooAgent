@@ -80,7 +80,7 @@ Discipline:
 # -----------------------------
 # Initialize Model (GitHub Copilot / GitHub Models API)
 # -----------------------------
-DEFAULT_MODEL_NAME = "openai/gpt-4.1"
+DEFAULT_MODEL_NAME = "deepseek-v3.1:671b-cloud"
 MODEL_NAME = os.getenv("MODEL", DEFAULT_MODEL_NAME)
 DEFAULT_SEED = int(os.getenv("ROOAGENT_SEED", "7"))
 
@@ -93,7 +93,7 @@ DEFAULT_SEED = int(os.getenv("ROOAGENT_SEED", "7"))
 #     top_p=1,
 # )
 
-model = ChatOllama(model="deepseek-v3.1:671b-cloud", temperature=0, seed=DEFAULT_SEED)
+model = ChatOllama(model=MODEL_NAME, temperature=0, seed=DEFAULT_SEED)
 
 tools = [
     inspect_root_data,
