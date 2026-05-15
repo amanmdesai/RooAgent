@@ -16,7 +16,6 @@ dependencies = [
     "langchain-core",
     "langgraph",
     "langchain-openai",
-    "uproot",
     "pandas",
     "numpy",
     "scipy",
