@@ -12,7 +12,6 @@ authors = [
 readme = "README.md"
 license = {text = "MIT"}
 dependencies = [
-    "uproot",
     "pandas",
     "numpy",
     "scipy",
