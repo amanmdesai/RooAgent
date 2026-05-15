@@ -1,12 +1,10 @@
 import array as _arr
 import ROOT
-from langchain_core.tools import tool
 from .utils import _load_hist
 
 
 # ─── Public tools ─────────────────────────────────────────────────────────────
 
-@tool
 def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
     """Return mean, RMS, and entry count of a TH1 from a ROOT file.
 
@@ -27,7 +25,6 @@ def get_histogram_stats(file_path: str, hist_name: str, rebin: int = 1) -> str:
     return f"{hist_name} -> Mean: {mean:.3f}, RMS: {rms:.3f}, Entries: {entries}"
 
 
-@tool
 def histogram_integral(
     file_path: str,
     hist_name: str,

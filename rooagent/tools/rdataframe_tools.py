@@ -1,7 +1,6 @@
 from typing import List, Dict, Optional
 import ROOT
 import os
-from langchain_core.tools import tool
 from .utils import (
     _parse_paths,
     _unique_canvas_name,
@@ -17,7 +16,6 @@ from .utils import (
 )
 
 
-@tool
 def root_tree_to_histogram(
     file_path: str,
     tree_name: str,
@@ -81,7 +79,6 @@ def root_tree_to_histogram(
     return f"Saved histogram '{chosen_hist_name}' to {output_root}"
 
 
-@tool
 def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "any",
                         weight: Optional[str] = None,
@@ -116,7 +113,6 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
     return f"yield{w_tag}={value} cut='{cut}' files={len(paths)}"
 
 
-@tool
 def compute_significance(signal_file: str,
                          tree_name: str,
                          cut: str = "",
@@ -176,7 +172,6 @@ def compute_significance(signal_file: str,
     significance = _compute_significance_from_yields(S, B)
     return f"S={S} B={B} Z={significance:.3f}"
 
-@tool
 def define_variable(
     file_path: str,
     tree_name: str,
@@ -212,7 +207,6 @@ def define_variable(
     return f"New variable '{new_var_name}' defined and saved to '{output_file}'"
 
 
-@tool
 def define_variable_and_plot(file_path: str, tree_name: str,
                              new_variables: Dict[str, str],
                              variable_to_plot: str,
@@ -278,7 +272,6 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     return f"Plot saved to {output_file}"
 
 
-@tool
 def find_optimal_cut(signal_file: str,
                      tree_name: str,
                      variable: str,
@@ -364,7 +357,6 @@ def find_optimal_cut(signal_file: str,
     )
 
 
-@tool
 def generate_cutflow(
     tree_name: str,
     cuts: List[str],
@@ -437,7 +429,6 @@ def generate_cutflow(
     return "\n\n".join(output_sections)
 
 
-@tool
 def compute_efficiency(
     file_path: str,
     tree_name: str,

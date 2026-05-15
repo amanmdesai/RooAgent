@@ -1,4 +1,3 @@
-from langchain_core.tools import tool
 import ROOT
 from typing import List, Optional
 from .utils import _get_root_files, _open_root_file, _get_trees, _list_objects_recursive
@@ -7,7 +6,6 @@ from .utils import _get_root_files, _open_root_file, _get_trees, _list_objects_r
 # -------------------------
 # Tools (LangChain)
 # -------------------------
-@tool
 def inspect_root_data(
     mode: str = "summary",
     directory: str = ".",

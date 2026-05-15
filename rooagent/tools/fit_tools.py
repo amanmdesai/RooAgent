@@ -1,9 +1,7 @@
 import ROOT
-from langchain_core.tools import tool
 from .utils import _unique_canvas_name
 
 
-@tool
 def fit_distribution(
     source: str,
     fit_function: str,

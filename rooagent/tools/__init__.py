@@ -8,6 +8,44 @@ from .tfile_tools import *
 from .utils import *
 
 
+def _attach_invoke_compatibility(tool_function):
+	def _invoke(payload=None, **kwargs):
+		if payload is None:
+			return tool_function(**kwargs)
+		if kwargs:
+			merged = dict(payload)
+			merged.update(kwargs)
+			return tool_function(**merged)
+		return tool_function(**payload)
+
+	tool_function.invoke = _invoke
+	return tool_function
+
+
+for _tool_function_name in [
+	"inspect_root_data",
+	"histogram_significance_and_cls",
+	"summarize_parameter_scan",
+	"root_tree_to_csv",
+	"fit_distribution",
+	"get_histogram_stats",
+	"histogram_integral",
+	"apply_cut_and_count",
+	"compute_significance",
+	"compute_efficiency",
+	"generate_cutflow",
+	"define_variable",
+	"define_variable_and_plot",
+	"root_tree_to_histogram",
+	"find_optimal_cut",
+	"plot",
+	"plot_2d",
+	"plot_significance_and_cls",
+	]:
+	if _tool_function_name in globals():
+		_attach_invoke_compatibility(globals()[_tool_function_name])
+
+
 # ------------------
 # ROOT configuration
 # ------------------

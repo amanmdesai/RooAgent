@@ -12,20 +12,17 @@ authors = [
 readme = "README.md"
 license = {text = "MIT"}
 dependencies = [
-    "langchain", 
-    "langchain-core",
-    "langgraph",
-    "langchain-openai",
     "uproot",
     "pandas",
     "numpy",
     "scipy",
     "matplotlib>=3.5",
+    "mcp[cli]",
 ]
 
 requires-python = ">=3.10"
 [project.scripts]
-rooagent = "rooagent.agent:main"
+rooagent-mcp = "rooagent.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/amanmdesai/RooAgent"

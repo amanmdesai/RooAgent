@@ -1,9 +1,7 @@
 from typing import List
 import ROOT
 import pandas as pd
-from langchain_core.tools import tool
 
-@tool
 def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output_csv: str, max_vector_size: int = 4) -> str:
     """Export TTree branches to a flattened CSV file, expanding vector branches into per-element columns.
 
