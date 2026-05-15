@@ -17,7 +17,6 @@ dependencies = [
     "langgraph",
     "langchain-openai",
     "langchain_ollama",
-    "uproot",
     "pandas",
     "numpy",
     "scipy",

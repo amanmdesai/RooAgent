@@ -25,6 +25,6 @@ pip install rooagent
 
 ## Notes
 
-- External libraries: uproot, pandas, numpy, langchain (specified in pyproject.toml)
+- External libraries:  pandas, numpy, langchain (specified in pyproject.toml)
 
 
