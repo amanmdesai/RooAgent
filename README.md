@@ -1,4 +1,5 @@
 [![DOI](https://zenodo.org/badge/1221477318.svg)](https://doi.org/10.5281/zenodo.20249498)
+[![PyPI Package latest release](https://img.shields.io/pypi/v/RooAgent.svg)](https://pypi.python.org/pypi/RooAgent)
 
 # RooAgent
 Agent for ROOT
