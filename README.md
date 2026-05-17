@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1221477318.svg)](https://doi.org/10.5281/zenodo.20249498)
+
 # RooAgent
 Agent for ROOT
 
