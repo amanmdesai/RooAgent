@@ -1,11 +1,13 @@
 # RooAgent
 
-[![arXiv](https://img.shields.io/badge/arXiv-2605.17318-b31b1b.svg)](https://arxiv.org/abs/2605.17318)
 [![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.20249498.svg)](https://doi.org/10.5281/zenodo.20249498)
 [![PyPI Package latest release](https://img.shields.io/pypi/v/RooAgent.svg)](https://pypi.python.org/pypi/RooAgent)
+[![arXiv](https://img.shields.io/badge/arXiv-2605.17318-b31b1b.svg)](https://arxiv.org/abs/2605.17318)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Website](https://img.shields.io/badge/Website-blue)](https://amanmdesai.github.io/RooAgent/)
 
 
-**Author:** Aman Desai (Adelaide University)
+**Author:** Aman Desai
 
 Talk to ROOT in plain English. RooAgent lets you run HEP analyses — histograms, event selection, fitting, significance scans — by typing what you want rather than writing code.
 
