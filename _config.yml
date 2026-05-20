@@ -1,0 +1,5 @@
+theme: jekyll-theme-cayman
+title: RooAgent
+description: An LLM Agent for ROOT-Based High Energy Physics Analysis
+url: "https://amanmdesai.github.io"
+baseurl: "/RooAgent"
