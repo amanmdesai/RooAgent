@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "RooAgent"
-version = "0.2.0"
+version = "0.3.0"
 description = "Agent For ROOT"
 authors = [
     { name="Aman Desai", email="amanmukeshdesai@gmail.com"}
@@ -12,19 +12,23 @@ authors = [
 readme = "README.md"
 license = {text = "MIT"}
 dependencies = [
-    "langchain", 
-    "langchain-core",
-    "langgraph",
-    "langchain-openai",
     "pandas",
     "numpy",
     "scipy",
     "matplotlib>=3.5",
+    "mcp[cli]",
+    "typing_extensions",
+    "langchain-core",
+    "langgraph",
+    "langchain-openai",
+    "langchain-anthropic",
+    # "langchain-ollama",
 ]
 
 requires-python = ">=3.10"
 [project.scripts]
-rooagent = "rooagent.agent:main"
+rooagent-mcp = "rooagent.rooagent:main"
+rooagent = "rooagent.rooagent:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/amanmdesai/RooAgent"

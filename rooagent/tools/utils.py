@@ -7,7 +7,6 @@ import ROOT
 from scipy.stats import norm, poisson
 
 
-
 _canvas_counter = [0]
 
 
@@ -16,13 +15,16 @@ _canvas_counter = [0]
 # ============================================================================
 
 def _open_root_file(file_path: Optional[str] = None):
-    # Open the first resolved ROOT file and return the TFile handle, or None on failure.
+    # Returns None on failure instead of raising, since callers format their own error strings.
     paths = _parse_paths(file_path)
     if not paths:
         return None
 
     target = paths[0]
-    f = ROOT.TFile.Open(target)
+    try:
+        f = ROOT.TFile.Open(target)
+    except Exception:
+        return None
     if not f or f.IsZombie():
         try:
             if f:
@@ -82,7 +84,6 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
                 if is_dir:
                     stack.append((obj, f"{cur_prefix}{name}/"))
         except Exception:
-            # ignore unreadable directories and continue
             continue
     return entries
 
@@ -90,6 +91,19 @@ def _list_objects_recursive(root_dir: ROOT.TDirectory, prefix: str = "") -> List
 # ============================================================================
 # HISTOGRAM UTILITIES: Binning, path parsing, type conversion
 # ============================================================================
+
+def _detach(hist):
+    # Remove a histogram from its file's ownership so it survives after the file is closed.
+    hist.SetDirectory(0)
+    ROOT.SetOwnership(hist, False)
+    return hist
+
+
+def _normalize_hist(hist) -> None:
+    # Scale a histogram to unit integral in place; no-op if absent or empty.
+    if hist is not None and hist.Integral() > 0:
+        hist.Scale(1.0 / hist.Integral())
+
 
 def _rebin_hist(hist, rebin: int):
     # Rebin a TH1 by the given factor; returns the original histogram when rebin <= 1.
@@ -101,16 +115,17 @@ def _rebin_hist(hist, rebin: int):
         return hist
     newname = f"{hist.GetName()}_rebin{r}"
     try:
-        hreb = hist.Rebin(r, newname)
-        ROOT.SetOwnership(hreb, False)
-        hreb.SetDirectory(0)
-        return hreb
+        return _detach(hist.Rebin(r, newname))
     except Exception:
         return hist
 
 
-def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] = None) -> List[str]:
-    # Merge comma-separated string and list file/directory paths into a deduplicated absolute-path list.
+def _parse_paths(
+    primary: Optional[str] = None,
+    additional: Optional[List[str]] = None,
+    allow_cwd_fallback: bool = True,
+) -> List[str]:
+    # Directories expand to their .root files; an empty result falls back to cwd's .root files.
     parsed: List[str] = []
 
     def _add_entry(p: str):
@@ -121,29 +136,22 @@ def _parse_paths(primary: Optional[str] = None, additional: Optional[List[str]] 
             for f in _get_root_files(p):
                 parsed.append(os.path.abspath(os.path.join(p, f)))
         else:
-            # treat as a file path (may or may not exist)
             parsed.append(os.path.abspath(p))
 
-    # Primary may be a comma-separated list
     if primary:
-        parts = [s.strip() for s in str(primary).split(",") if s.strip()]
-        for part in parts:
+        for part in [s.strip() for s in str(primary).split(",") if s.strip()]:
             _add_entry(part)
 
-    # Additional may be a list of paths/directories
     if additional:
         for part in additional:
-            if not part:
-                continue
-            _add_entry(part)
+            if part:
+                _add_entry(part)
 
-    # If nothing resolved, default to current working directory
-    if not parsed:
+    if allow_cwd_fallback and not parsed:
         cwd = os.getcwd()
         for f in _get_root_files(cwd):
             parsed.append(os.path.abspath(os.path.join(cwd, f)))
 
-    # Deduplicate while preserving order
     seen = set()
     result: List[str] = []
     for p in parsed:
@@ -297,7 +305,10 @@ def _get_vector_branches(file_path: str, tree_name: str) -> List[str]:
     for branch in tree.GetListOfBranches():
         classname = branch.GetClassName()
         name = branch.GetName()
-        if "vector" in classname:
+        leaf = branch.GetLeaf(branch.GetName())
+        leaf_type = leaf.GetTypeName() if leaf else ""
+        type_text = f"{classname} {leaf_type}".lower()
+        if "vector" in type_text or "rvec" in type_text:
             vector_branches.append(name)
 
     f.Close()
@@ -395,19 +406,24 @@ def _resolve_weight_branch(df, weight_branch: str) -> str:
 # HISTOGRAM I/O & BUILDING: Load, create, and manipulate histograms
 # ============================================================================
 
-def _load_hist(file_path: str, hist_name: str, rebin: int):
-    # Load a named TH1 from a ROOT file and return (histogram, None) or (None, error_string).
+def _open_root_file_or_error(file_path: str):
+    # Open a ROOT file, returning (file, None) or (None, error_string) with a standard message.
     f = _open_root_file(file_path)
     if not f:
         return None, f"Error: could not open file {file_path}."
+    return f, None
 
-    h = f.Get(hist_name)
-    if not h:
-        f.Close()
-        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
-    h.SetDirectory(0)
-    ROOT.SetOwnership(h, False)
+
+def _load_hist(file_path: str, hist_name: str, rebin: int):
+    # Load a named TH1 from a ROOT file and return (histogram, None) or (None, error_string).
+    f, err = _open_root_file_or_error(file_path)
+    if err:
+        return None, err
+
+    h = _get_hist(f, hist_name)
     f.Close()
+    if not h:
+        return None, f"Error: histogram '{hist_name}' not found in {file_path}."
     h = _rebin_hist(h, rebin)
     return h, None
 
@@ -425,15 +441,17 @@ def _build_tree_hist(
     vector_mode: str = "any",
     rebin: int = 1,
     apply_cuts_before_plot: bool = True,
+    defines: Optional[Dict[str, str]] = None,
 ):
-    # Project a TTree branch into a TH1 via RDataFrame, applying optional cuts and weights.
-    files = _parse_paths(file_path)
+    # Project a TTree branch into a TH1 via RDataFrame, applying optional defines, cuts and weights.
+    files = _parse_paths(file_path, allow_cwd_fallback=False)
     if not files:
         raise RuntimeError("No ROOT files found to build histogram.")
 
     df = _build_dataframe(tree_name, files)
+    for name, expr in (defines or {}).items():
+        df = df.Define(name, expr)
     if apply_cuts_before_plot:
-        # use the first file as a representative for vector-branch discovery
         df = _apply_cuts(df, files[0], tree_name, cuts, vector_mode)
 
     resolved_weight = _resolve_weight_branch(df, weight_branch)
@@ -444,13 +462,9 @@ def _build_tree_hist(
         df = df.Define(wname, "1.0")
 
     hist_ptr = df.Histo1D((hist_name, variable, bins, xmin, xmax), variable, wname)
-    h = hist_ptr.GetValue()
-    ROOT.SetOwnership(h, False)
-    h.SetDirectory(0)
+    h = _detach(hist_ptr.GetValue())
     h = _rebin_hist(h, rebin)
     return h
-
-
 
 
 # ============================================================================
@@ -492,6 +506,51 @@ def _style_ratio_hist(ratio_hist, x_title: str, y_title: str = "Ratio"):
     ratio_hist.SetMaximum(2.0)
 
 
+def _sum_hists(hist_list: List, name: str):
+    # Clone the first histogram and add the rest into it, returning a detached sum.
+    total = _detach(hist_list[0].Clone(name))
+    for hist in hist_list[1:]:
+        total.Add(hist)
+    return total
+
+
+def _draw_unity_line(x_axis):
+    # Draw a dashed gray reference line at y=1 across a ratio panel's x-range.
+    unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
+    ROOT.SetOwnership(unity, False)
+    unity.SetLineStyle(2)
+    unity.SetLineColor(ROOT.kGray + 2)
+    unity.Draw()
+    return unity
+
+
+def _styled_legend(x1: float, y1: float, x2: float, y2: float):
+    # Common legend chrome (border, font, text size) shared by the comparison/stacked plots.
+    legend = ROOT.TLegend(x1, y1, x2, y2)
+    legend.SetBorderSize(0)
+    legend.SetTextFont(42)
+    legend.SetTextSize(0.035)
+    return legend
+
+
+def _build_ratio_hist(numerator, denominator, name: str, binomial: bool = False):
+    # Clone numerator and divide by denominator; binomial=True uses "B" (data/MC efficiency-style) errors.
+    ratio = _detach(numerator.Clone(name))
+    if binomial:
+        ratio.Divide(numerator, denominator, 1.0, 1.0, "B")
+    else:
+        ratio.Divide(denominator)
+    return ratio
+
+
+def _draw_ratio_hist(ratio, lower_pad, x_title: str, y_title: str, draw_option: str):
+    # Style, draw, and annotate a prepared ratio histogram in the lower pad with a unity line.
+    lower_pad.cd()
+    _style_ratio_hist(ratio, x_title, y_title)
+    ratio.Draw(draw_option)
+    _draw_unity_line(ratio.GetXaxis())
+
+
 def _build_reference_ratio_hists(hist_list: List):
     # Divide every histogram in the list by the first, returning a list of ratio histograms.
     if len(hist_list) < 2:
@@ -500,9 +559,7 @@ def _build_reference_ratio_hists(hist_list: List):
     reference = hist_list[0]
     ratio_hists = []
     for i, hist in enumerate(hist_list[1:], start=1):
-        ratio = hist.Clone(f"{hist.GetName()}_ratio_{i}")
-        ratio.SetDirectory(0)
-        ROOT.SetOwnership(ratio, False)
+        ratio = _detach(hist.Clone(f"{hist.GetName()}_ratio_{i}"))
         ratio.Divide(reference)
         ratio_hists.append(ratio)
 
@@ -514,18 +571,8 @@ def _build_signal_background_ratio(signal_hist, background_hists: List):
     if signal_hist is None or not background_hists:
         return None
 
-    summed_background = background_hists[0].Clone(f"{signal_hist.GetName()}_bkg_sum")
-    summed_background.SetDirectory(0)
-    ROOT.SetOwnership(summed_background, False)
-
-    for hist in background_hists[1:]:
-        summed_background.Add(hist)
-
-    ratio = signal_hist.Clone(f"{signal_hist.GetName()}_over_bkg_ratio")
-    ratio.SetDirectory(0)
-    ROOT.SetOwnership(ratio, False)
-    ratio.Divide(summed_background)
-    return ratio
+    summed_background = _sum_hists(background_hists, f"{signal_hist.GetName()}_bkg_sum")
+    return _build_ratio_hist(signal_hist, summed_background, f"{signal_hist.GetName()}_over_bkg_ratio")
 
 
 def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
@@ -543,12 +590,7 @@ def _draw_ratio_panel(hist_list: List, lower_pad, x_title: str):
         _style_ratio_hist(ratio, x_title)
         ratio.Draw("HIST" if i == 0 else "HIST SAME")
 
-    x_axis = ratio_hists[0].GetXaxis()
-    unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
-    ROOT.SetOwnership(unity, False)
-    unity.SetLineStyle(2)
-    unity.SetLineColor(ROOT.kGray + 2)
-    unity.Draw()
+    _draw_unity_line(ratio_hists[0].GetXaxis())
 
 
 def _draw_overlay_plot(
@@ -625,6 +667,40 @@ def _draw_overlay_plot(
 # 1D PLOTTING: Histograms, trees, comparisons, signal vs background
 # ============================================================================
 
+def _plot_single_hist(
+    h,
+    label: str,
+    output_pdf: str,
+    x_title: str,
+    y_title: str,
+    normalize: bool,
+    logy: bool,
+    canvas_name: str,
+    canvas_title: str,
+):
+    # Normalize, style, and draw a single histogram; shared by _plot_hist and _plot_tree.
+    if normalize:
+        _normalize_hist(h)
+
+    h.SetLineColor(ROOT.kBlue + 1)
+    h.SetLineWidth(3)
+
+    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
+    legend.AddEntry(h, label, "l")
+
+    return _draw_overlay_plot(
+        hist_list=[h],
+        legend=legend,
+        output_pdf=output_pdf,
+        x_title=x_title,
+        y_title="Normalized Events" if normalize else y_title,
+        canvas_name=canvas_name,
+        canvas_title=canvas_title,
+        show_ratio=False,
+        logy=logy,
+    )
+
+
 def _plot_hist(
     file_path: str,
     hist_name: str,
@@ -640,26 +716,7 @@ def _plot_hist(
     if err:
         return err
 
-    if normalize and h.Integral() > 0:
-        h.Scale(1.0 / h.Integral())
-
-    h.SetLineColor(ROOT.kBlue + 1)
-    h.SetLineWidth(3)
-
-    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
-    legend.AddEntry(h, hist_name, "l")
-
-    result = _draw_overlay_plot(
-        hist_list=[h],
-        legend=legend,
-        output_pdf=output_pdf,
-        x_title=xlabel,
-        y_title="Normalized Events" if normalize else ylabel,
-        canvas_name="c_hist",
-        canvas_title="Histogram",
-        show_ratio=False,
-        logy=logy,
-    )
+    result = _plot_single_hist(h, hist_name, output_pdf, xlabel, ylabel, normalize, logy, "c_hist", "Histogram")
     if result == "No histograms created.":
         return "Error: No histograms were found."
 
@@ -697,25 +754,7 @@ def _plot_tree(
         apply_cuts_before_plot=apply_cuts_before_plot,
     )
 
-    if normalize and h.Integral() > 0:
-        h.Scale(1.0 / h.Integral())
-
-    h.SetLineColor(ROOT.kBlue + 1)
-    h.SetLineWidth(3)
-
-    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
-    legend.AddEntry(h, variable, "l")
-
-    result = _draw_overlay_plot(
-        hist_list=[h],
-        legend=legend,
-        output_pdf=output_pdf,
-        x_title=variable,
-        y_title="Normalized Events" if normalize else "Events",
-        canvas_name="c_tree",
-        canvas_title="Tree Variable",
-        show_ratio=False,
-    )
+    result = _plot_single_hist(h, variable, output_pdf, variable, "Events", normalize, False, "c_tree", "Tree Variable")
     if result == "No histograms created.":
         return "Error: No histograms were found."
 
@@ -763,8 +802,8 @@ def _plot_tree_compare(
             apply_cuts_before_plot=apply_cuts_before_plot,
         )
 
-        if normalize and h.Integral() > 0:
-            h.Scale(1.0 / h.Integral())
+        if normalize:
+            _normalize_hist(h)
 
         h.SetLineColor(colors[i % len(colors)])
         h.SetLineWidth(3)
@@ -804,11 +843,8 @@ def _plot_hist_compare(
     if not (len(file_paths) == len(hist_names) == len(legends)):
         return "Error: file_paths, hist_names, and legends must have the same length."
 
-    legend = ROOT.TLegend(0.65, 0.7, 0.9, 0.9)
-    legend.SetBorderSize(0)
+    legend = _styled_legend(0.65, 0.7, 0.9, 0.9)
     legend.SetFillColor(0)
-    legend.SetTextFont(42)
-    legend.SetTextSize(0.035)
 
     colors = [ROOT.kBlue + 1, ROOT.kRed + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7, ROOT.kCyan + 2]
     hist_list = []
@@ -820,8 +856,8 @@ def _plot_hist_compare(
             skipped.append(err)
             continue
 
-        if normalize and h.Integral() > 0:
-            h.Scale(1.0 / h.Integral())
+        if normalize:
+            _normalize_hist(h)
 
         h.SetLineColor(colors[i % len(colors)])
         h.SetLineWidth(3)
@@ -853,6 +889,258 @@ def _plot_hist_compare(
     return msg
 
 
+_SIG_BKG_SIGNAL_LINE_COLORS = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
+_SIG_BKG_SIGNAL_HATCH_STYLES = [3345, 3354, 3395, 3444, 3490]
+_SIG_BKG_BACKGROUND_FILL_COLORS = [
+    ROOT.kAzure - 9,
+    ROOT.kOrange - 2,
+    ROOT.kSpring - 6,
+    ROOT.kPink - 8,
+    ROOT.kViolet - 6,
+    ROOT.kCyan - 6,
+    ROOT.kGray + 2,
+    ROOT.kYellow - 7,
+    ROOT.TColor.GetColor("#cfc9b3"),
+    ROOT.TColor.GetColor("#bcd9d3"),
+    ROOT.TColor.GetColor("#e8dff8"),
+]
+
+
+def _draw_comparison_ratio_panel(
+    lower_pad,
+    variable: str,
+    data_hist,
+    mc_sum_hist,
+    data_ratio_label: str,
+    binomial: bool,
+    signal_hists: Optional[List] = None,
+    background_hists: Optional[List] = None,
+):
+    # Draw Data/MC (or Sig/Bkg fallback when no data) ratio panel; shared by all three sig-vs-bkg draw paths.
+    if lower_pad is None:
+        return
+    if data_hist is not None:
+        ratio = _build_ratio_hist(data_hist, mc_sum_hist, "h_data_ratio", binomial=binomial)
+        _draw_ratio_hist(ratio, lower_pad, variable, data_ratio_label, "PE1")
+    elif signal_hists and background_hists:
+        ratio = _build_signal_background_ratio(signal_hists[0], background_hists)
+        _draw_ratio_hist(ratio, lower_pad, variable, "Sig/Bkg", "HIST")
+
+
+def _build_sig_bkg_hists(
+    tree_name: str,
+    variable: str,
+    bins: int,
+    xmin: float,
+    xmax: float,
+    signal_paths: List[str],
+    background_paths: List[str],
+    data_file: str,
+    wants_data: bool,
+    weight_branch: str,
+    cuts: Optional[List[str]],
+    vector_mode: str,
+    apply_cuts_before_plot: bool,
+    rebin: int,
+):
+    # Build and style the raw (unnormalized) background, signal, and optional data histograms.
+    background_hists = []
+    for i, fpath in enumerate(background_paths):
+        h = _build_tree_hist(
+            file_path=fpath, tree_name=tree_name, variable=variable, bins=bins, xmin=xmin, xmax=xmax,
+            hist_name=f"h_sigbkg_bkg_{i}", weight_branch=weight_branch, cuts=cuts, vector_mode=vector_mode,
+            rebin=rebin, apply_cuts_before_plot=apply_cuts_before_plot,
+        )
+        h.SetFillColor(_SIG_BKG_BACKGROUND_FILL_COLORS[i % len(_SIG_BKG_BACKGROUND_FILL_COLORS)])
+        h.SetLineColor(ROOT.kBlack)
+        h.SetLineWidth(1)
+        background_hists.append(h)
+
+    signal_hists = []
+    for i, fpath in enumerate(signal_paths):
+        h = _build_tree_hist(
+            file_path=fpath, tree_name=tree_name, variable=variable, bins=bins, xmin=xmin, xmax=xmax,
+            hist_name=f"h_sigbkg_sig_{i}", weight_branch=weight_branch, cuts=cuts, vector_mode=vector_mode,
+            rebin=rebin, apply_cuts_before_plot=apply_cuts_before_plot,
+        )
+        line_color = _SIG_BKG_SIGNAL_LINE_COLORS[i % len(_SIG_BKG_SIGNAL_LINE_COLORS)]
+        h.SetFillStyle(0)
+        h.SetLineColor(line_color)
+        h.SetLineWidth(3)
+        h.SetLineStyle(1 + (i % 4))
+        signal_hists.append(h)
+
+    data_hist = None
+    if wants_data:
+        data_hist = _build_tree_hist(
+            file_path=data_file, tree_name=tree_name, variable=variable, bins=bins, xmin=xmin, xmax=xmax,
+            hist_name="h_sigbkg_data", weight_branch="", cuts=cuts, vector_mode=vector_mode,
+            rebin=rebin, apply_cuts_before_plot=apply_cuts_before_plot,
+        )
+        data_hist.SetFillStyle(0)
+        data_hist.SetMarkerStyle(20)
+        data_hist.SetMarkerSize(1.0)
+        data_hist.SetMarkerColor(ROOT.kBlack)
+        data_hist.SetLineColor(ROOT.kBlack)
+        data_hist.SetLineWidth(1)
+
+    return background_hists, signal_hists, data_hist
+
+
+def _normalize_sig_bkg_hists(background_hists: List, signal_hists: List, data_hist):
+    # Scale each histogram to unit integral and reset background line styling for the normalized overlay look.
+    for i, h in enumerate(background_hists):
+        _normalize_hist(h)
+        h.SetFillStyle(0)
+        h.SetLineColor(_SIG_BKG_BACKGROUND_FILL_COLORS[i % len(_SIG_BKG_BACKGROUND_FILL_COLORS)])
+        h.SetLineWidth(2)
+
+    for h in signal_hists:
+        _normalize_hist(h)
+
+    _normalize_hist(data_hist)
+
+
+def _build_sig_bkg_legend(
+    signal_hists: List, signal_labels: List[str], background_hists: List, background_labels: List[str],
+    data_hist, data_label: str, use_full_stack: bool, normalize: bool,
+):
+    # Assemble the shared legend (data, then signals, then backgrounds, each reversed for stack order).
+    legend = _styled_legend(0.62, 0.68, 0.88, 0.88)
+    legend.SetFillStyle(0)
+
+    if data_hist:
+        legend.AddEntry(data_hist, data_label, "lep")
+
+    sig_legend_opt = "f" if use_full_stack else "l"
+    for h, label in reversed(list(zip(signal_hists, signal_labels))):
+        legend.AddEntry(h, label, sig_legend_opt)
+
+    bkg_legend_opt = "l" if normalize else "f"
+    for h, label in reversed(list(zip(background_hists, background_labels))):
+        legend.AddEntry(h, label, bkg_legend_opt)
+
+    return legend
+
+
+def _draw_sig_bkg_overlay(
+    background_hists: List, signal_hists: List, data_hist, legend, variable: str, y_title: str,
+    output_pdf: str, show_ratio: bool, canvas, lower_pad,
+):
+    # Draw the (non-stacked) overlay path: all hists as lines/markers on one pad, no THStack.
+    hist_list = background_hists + signal_hists + ([data_hist] if data_hist else [])
+    draw_options = ["HIST"] * (len(background_hists) + len(signal_hists))
+    if data_hist:
+        draw_options.append("PE1")
+
+    result = _draw_overlay_plot(
+        hist_list=hist_list, legend=legend, output_pdf=output_pdf, x_title=variable, y_title=y_title,
+        canvas_name="c_sig_bkg_overlay", canvas_title="Signal vs Backgrounds",
+        show_ratio=show_ratio, draw_options=draw_options,
+    )
+    if result == "No histograms created.":
+        return result
+
+    if show_ratio and lower_pad is not None:
+        mc_sum_hist = _sum_hists(background_hists, "h_all_bkg_ratio") if data_hist else None
+        _draw_comparison_ratio_panel(
+            lower_pad, variable, data_hist, mc_sum_hist, "Data/Bkg", binomial=False,
+            signal_hists=signal_hists, background_hists=background_hists,
+        )
+        canvas.Update()
+        canvas.SaveAs(output_pdf)
+
+    return f"Saved signal-vs-background comparison to {output_pdf}"
+
+
+def _build_and_draw_stack(name: str, stacked_hists: List, variable: str, y_title: str,
+                           show_ratio: bool, extra_max_hists: Optional[List] = None):
+    # Build/draw a THStack sized to fit both its own contents and any unstacked overlay hists.
+    stack = ROOT.THStack(name, "")
+    ROOT.SetOwnership(stack, False)
+    for h in stacked_hists:
+        stack.Add(h)
+
+    stack.Draw("HIST")
+    stack.GetXaxis().SetTitle(variable)
+    stack.GetYaxis().SetTitle(y_title)
+    if show_ratio:
+        stack.GetXaxis().SetLabelSize(0)
+        stack.GetXaxis().SetTitleSize(0)
+        stack.GetYaxis().SetTitleSize(0.055)
+        stack.GetYaxis().SetLabelSize(0.045)
+
+    extra_max = max((h.GetMaximum() for h in (extra_max_hists or [])), default=0.0)
+    stack.SetMaximum(max(stack.GetMaximum(), extra_max) * 1.35)
+    return stack
+
+
+def _draw_stat_band(hist_list: List, name: str):
+    # Sum hists into a hashed gray stat-error band and draw it as E2 on the current pad.
+    band = _sum_hists(hist_list, name)
+    band.SetFillStyle(3354)
+    band.SetFillColor(ROOT.kGray + 2)
+    band.SetLineColor(ROOT.kGray + 2)
+    band.SetMarkerSize(0)
+    band.Draw("E2 SAME")
+    return band
+
+
+def _draw_sig_bkg_stack_bkg_only(
+    background_hists: List, signal_hists: List, data_hist, legend, variable: str, y_title: str,
+    output_pdf: str, show_ratio: bool, canvas, draw_pad, lower_pad,
+):
+    # Draw backgrounds as a THStack with signal(s) and data overlaid unstacked (stack_signal=False).
+    draw_pad.cd()
+    _build_and_draw_stack(
+        "hs_bkg_only", background_hists, variable, y_title, show_ratio,
+        extra_max_hists=signal_hists + ([data_hist] if data_hist else []),
+    )
+    bkg_sum = _draw_stat_band(background_hists, "h_bkg_stat_band")
+
+    for h in signal_hists:
+        h.Draw("HIST SAME")
+
+    if data_hist:
+        data_hist.Draw("PE1 SAME")
+
+    legend.Draw()
+
+    if show_ratio and lower_pad is not None:
+        _draw_comparison_ratio_panel(
+            lower_pad, variable, data_hist, bkg_sum, "Data/Bkg", binomial=True,
+            signal_hists=signal_hists, background_hists=background_hists,
+        )
+
+    canvas.Update()
+    canvas.SaveAs(output_pdf)
+    return f"Saved signal-vs-background comparison to {output_pdf}"
+
+
+def _draw_sig_bkg_full_stack(
+    background_hists: List, signal_hists: List, data_hist, legend, variable: str, y_title: str,
+    output_pdf: str, show_ratio: bool, canvas, lower_pad,
+):
+    # Draw signal(s) stacked on top of backgrounds in a single THStack, with data overlaid.
+    _build_and_draw_stack(
+        "hs_sig_bkg", background_hists + signal_hists, variable, y_title, show_ratio,
+        extra_max_hists=[data_hist] if data_hist else [],
+    )
+    mc_sum = _draw_stat_band(background_hists + signal_hists, "h_mc_stat_band")
+
+    if data_hist:
+        data_hist.Draw("PE1 SAME")
+
+    legend.Draw()
+
+    if show_ratio and lower_pad is not None:
+        _draw_comparison_ratio_panel(lower_pad, variable, data_hist, mc_sum, "Data/MC", binomial=True)
+
+    canvas.Update()
+    canvas.SaveAs(output_pdf)
+    return f"Saved signal-vs-background comparison to {output_pdf}"
+
+
 def _plot_signal_vs_backgrounds(
     signal_file: str,
     signal_files: Optional[List[str]],
@@ -878,12 +1166,10 @@ def _plot_signal_vs_backgrounds(
     apply_cuts_before_plot: bool = True,
     stack_signal: bool = True,
 ):
-    # Produce a stacked-backgrounds plot with optional signal overlay and data points.
-    # stack_signal=True (default): signal is added to the stack on top of backgrounds.
-    # stack_signal=False: backgrounds are stacked; signals are overlaid as separate lines.
-    signal_paths = _parse_paths(signal_file, signal_files)
+    # stack_signal toggles whether signal is stacked on top of backgrounds or overlaid as lines.
+    signal_paths = _parse_paths(signal_file, signal_files, allow_cwd_fallback=False)
 
-    background_paths = _parse_paths(additional=background_files)
+    background_paths = _parse_paths(additional=background_files, allow_cwd_fallback=False)
     if not background_paths:
         return "Error: background_files cannot be empty."
 
@@ -908,135 +1194,31 @@ def _plot_signal_vs_backgrounds(
     if wants_data and not data_file.strip():
         return "Error: data_file must be provided when plot_data is True."
 
-    signal_hists = []
-    background_hists = []
-
-    signal_line_colors = [ROOT.kRed + 1, ROOT.kBlue + 1, ROOT.kGreen + 2, ROOT.kMagenta + 1, ROOT.kOrange + 7]
-    signal_hatch_styles = [3345, 3354, 3395, 3444, 3490]
-    background_fill_colors = [
-        ROOT.kAzure - 9,
-        ROOT.kOrange - 2,
-        ROOT.kSpring - 6,
-        ROOT.kPink - 8,
-        ROOT.kViolet - 6,
-        ROOT.kCyan - 6,
-        ROOT.kGray + 2,
-        ROOT.kYellow - 7,
-        ROOT.TColor.GetColor("#cfc9b3"),
-        ROOT.TColor.GetColor("#bcd9d3"),
-        ROOT.TColor.GetColor("#e8dff8"),
-    ]
-
-    for i, fpath in enumerate(background_paths):
-        h = _build_tree_hist(
-            file_path=fpath,
-            tree_name=tree_name,
-            variable=variable,
-            bins=bins,
-            xmin=xmin,
-            xmax=xmax,
-            hist_name=f"h_sigbkg_bkg_{i}",
-            weight_branch=weight_branch,
-            cuts=cuts,
-            vector_mode=vector_mode,
-            rebin=rebin,
-            apply_cuts_before_plot=apply_cuts_before_plot,
-        )
-        h.SetFillColor(background_fill_colors[i % len(background_fill_colors)])
-        h.SetLineColor(ROOT.kBlack)
-        h.SetLineWidth(1)
-        background_hists.append(h)
-
-    for i, fpath in enumerate(signal_paths):
-        h = _build_tree_hist(
-            file_path=fpath,
-            tree_name=tree_name,
-            variable=variable,
-            bins=bins,
-            xmin=xmin,
-            xmax=xmax,
-            hist_name=f"h_sigbkg_sig_{i}",
-            weight_branch=weight_branch,
-            cuts=cuts,
-            vector_mode=vector_mode,
-            rebin=rebin,
-            apply_cuts_before_plot=apply_cuts_before_plot,
-        )
-        line_color = signal_line_colors[i % len(signal_line_colors)]
-        h.SetFillStyle(0)
-        h.SetLineColor(line_color)
-        h.SetLineWidth(3)
-        h.SetLineStyle(1 + (i % 4))
-        signal_hists.append(h)
-
-    data_hist = None
-    if wants_data:
-        data_hist = _build_tree_hist(
-            file_path=data_file,
-            tree_name=tree_name,
-            variable=variable,
-            bins=bins,
-            xmin=xmin,
-            xmax=xmax,
-            hist_name="h_sigbkg_data",
-            weight_branch="",
-            cuts=cuts,
-            vector_mode=vector_mode,
-            rebin=rebin,
-            apply_cuts_before_plot=apply_cuts_before_plot,
-        )
-        data_hist.SetFillStyle(0)
-        data_hist.SetMarkerStyle(20)
-        data_hist.SetMarkerSize(1.0)
-        data_hist.SetMarkerColor(ROOT.kBlack)
-        data_hist.SetLineColor(ROOT.kBlack)
-        data_hist.SetLineWidth(1)
+    background_hists, signal_hists, data_hist = _build_sig_bkg_hists(
+        tree_name, variable, bins, xmin, xmax, signal_paths, background_paths, data_file, wants_data,
+        weight_branch, cuts, vector_mode, apply_cuts_before_plot, rebin,
+    )
 
     y_title = "Normalized Events" if normalize else "Events"
     if normalize:
-        for i, h in enumerate(background_hists):
-            if h.Integral() > 0:
-                h.Scale(1.0 / h.Integral())
-            h.SetFillStyle(0)
-            h.SetLineColor(background_fill_colors[i % len(background_fill_colors)])
-            h.SetLineWidth(2)
+        _normalize_sig_bkg_hists(background_hists, signal_hists, data_hist)
 
-        for h in signal_hists:
-            if h.Integral() > 0:
-                h.Scale(1.0 / h.Integral())
-
-        if data_hist and data_hist.Integral() > 0:
-            data_hist.Scale(1.0 / data_hist.Integral())
-
-    # Drawing mode: full-stack (bkg+sig stacked), bkg-stack (bkg stacked, sig as lines), or overlay.
     use_full_stack = wants_data and not normalize and stack_signal and bool(signal_hists)
     use_bkg_stack = wants_data and not normalize and (not stack_signal) and bool(background_hists)
 
     if use_full_stack:
         for i, h in enumerate(signal_hists):
-            line_color = signal_line_colors[i % len(signal_line_colors)]
-            h.SetFillStyle(signal_hatch_styles[i % len(signal_hatch_styles)])
+            line_color = _SIG_BKG_SIGNAL_LINE_COLORS[i % len(_SIG_BKG_SIGNAL_LINE_COLORS)]
+            h.SetFillStyle(_SIG_BKG_SIGNAL_HATCH_STYLES[i % len(_SIG_BKG_SIGNAL_HATCH_STYLES)])
             h.SetFillColor(line_color)
             h.SetLineColor(line_color)
             h.SetLineWidth(2)
             h.SetLineStyle(1)
 
-    legend = ROOT.TLegend(0.62, 0.68, 0.88, 0.88)
-    legend.SetFillStyle(0)
-    legend.SetBorderSize(0)
-    legend.SetTextFont(42)
-    legend.SetTextSize(0.035)
-
-    if data_hist:
-        legend.AddEntry(data_hist, data_label, "lep")
-
-    sig_legend_opt = "f" if use_full_stack else "l"
-    for h, label in reversed(list(zip(signal_hists, signal_labels))):
-        legend.AddEntry(h, label, sig_legend_opt)
-
-    bkg_legend_opt = "l" if normalize else "f"
-    for h, label in reversed(list(zip(background_hists, background_labels))):
-        legend.AddEntry(h, label, bkg_legend_opt)
+    legend = _build_sig_bkg_legend(
+        signal_hists, signal_labels, background_hists, background_labels,
+        data_hist, data_label, use_full_stack, normalize,
+    )
 
     canvas, upper_pad, lower_pad = _create_plot_pads(
         _unique_canvas_name("c_sig_bkg"), "Signal vs Backgrounds", show_ratio
@@ -1045,200 +1227,44 @@ def _plot_signal_vs_backgrounds(
     draw_pad.cd()
 
     if not use_full_stack and not use_bkg_stack:
-        hist_list = background_hists + signal_hists + ([data_hist] if data_hist else [])
-        draw_options = ["HIST"] * (len(background_hists) + len(signal_hists))
-        if data_hist:
-            draw_options.append("PE1")
-
-        result = _draw_overlay_plot(
-            hist_list=hist_list,
-            legend=legend,
-            output_pdf=output_pdf,
-            x_title=variable,
-            y_title=y_title,
-            canvas_name="c_sig_bkg_overlay",
-            canvas_title="Signal vs Backgrounds",
-            show_ratio=show_ratio,
-            draw_options=draw_options,
+        return _draw_sig_bkg_overlay(
+            background_hists, signal_hists, data_hist, legend, variable, y_title,
+            output_pdf, show_ratio, canvas, lower_pad,
         )
-        if result == "No histograms created.":
-            return result
-
-        if show_ratio and lower_pad is not None:
-            # Keep a physics-meaningful ratio panel for this mode.
-            all_bkg = background_hists[0].Clone("h_all_bkg_ratio")
-            all_bkg.SetDirectory(0)
-            ROOT.SetOwnership(all_bkg, False)
-            for h in background_hists[1:]:
-                all_bkg.Add(h)
-
-            lower_pad.cd()
-            if data_hist:
-                ratio = data_hist.Clone("h_data_bkg_ratio")
-                ratio.SetDirectory(0)
-                ROOT.SetOwnership(ratio, False)
-                ratio.Divide(all_bkg)
-                _style_ratio_hist(ratio, variable, "Data/Bkg")
-                ratio.Draw("PE1")
-            else:
-                ratio = _build_signal_background_ratio(signal_hists[0], background_hists)
-                _style_ratio_hist(ratio, variable, "Sig/Bkg")
-                ratio.Draw("HIST")
-
-            x_axis = ratio.GetXaxis()
-            unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
-            ROOT.SetOwnership(unity, False)
-            unity.SetLineStyle(2)
-            unity.SetLineColor(ROOT.kGray + 2)
-            unity.Draw()
-
-            canvas.Update()
-            canvas.SaveAs(output_pdf)
-
-        return f"Saved signal-vs-background comparison to {output_pdf}"
 
     if use_bkg_stack:
-        # Backgrounds only in the stack; signals drawn as separate lines on top.
-        bkg_stack = ROOT.THStack("hs_bkg_only", "")
-        ROOT.SetOwnership(bkg_stack, False)
-        for h in background_hists:
-            bkg_stack.Add(h)
+        return _draw_sig_bkg_stack_bkg_only(
+            background_hists, signal_hists, data_hist, legend, variable, y_title,
+            output_pdf, show_ratio, canvas, draw_pad, lower_pad,
+        )
 
-        draw_pad.cd()
-        bkg_stack.Draw("HIST")
-        bkg_stack.GetXaxis().SetTitle(variable)
-        bkg_stack.GetYaxis().SetTitle(y_title)
-        if show_ratio:
-            bkg_stack.GetXaxis().SetLabelSize(0)
-            bkg_stack.GetXaxis().SetTitleSize(0)
-            bkg_stack.GetYaxis().SetTitleSize(0.055)
-            bkg_stack.GetYaxis().SetLabelSize(0.045)
-
-        sig_max = max((h.GetMaximum() for h in signal_hists), default=0.0)
-        data_max = data_hist.GetMaximum() if data_hist else 0.0
-        bkg_stack.SetMaximum(max(bkg_stack.GetMaximum(), sig_max, data_max) * 1.35)
-
-        # MC stat band (backgrounds only)
-        bkg_band = background_hists[0].Clone("h_bkg_stat_band")
-        bkg_band.SetDirectory(0)
-        ROOT.SetOwnership(bkg_band, False)
-        for h in background_hists[1:]:
-            bkg_band.Add(h)
-        bkg_band.SetFillStyle(3354)
-        bkg_band.SetFillColor(ROOT.kGray + 2)
-        bkg_band.SetLineColor(ROOT.kGray + 2)
-        bkg_band.SetMarkerSize(0)
-        bkg_band.Draw("E2 SAME")
-
-        for h in signal_hists:
-            h.Draw("HIST SAME")
-
-        if data_hist:
-            data_hist.Draw("PE1 SAME")
-
-        legend.Draw()
-
-        if show_ratio and lower_pad is not None:
-            total_bkg = background_hists[0].Clone("h_total_bkg_for_ratio")
-            total_bkg.SetDirectory(0)
-            ROOT.SetOwnership(total_bkg, False)
-            for h in background_hists[1:]:
-                total_bkg.Add(h)
-
-            lower_pad.cd()
-            if data_hist:
-                ratio = data_hist.Clone("h_data_bkg_ratio")
-                ratio.SetDirectory(0)
-                ROOT.SetOwnership(ratio, False)
-                ratio.Divide(data_hist, total_bkg, 1.0, 1.0, "B")
-                _style_ratio_hist(ratio, variable, "Data/Bkg")
-                ratio.Draw("PE1")
-            elif signal_hists:
-                ratio = _build_signal_background_ratio(signal_hists[0], background_hists)
-                _style_ratio_hist(ratio, variable, "Sig/Bkg")
-                ratio.Draw("HIST")
-
-            if data_hist or signal_hists:
-                x_axis = ratio.GetXaxis()
-                unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
-                ROOT.SetOwnership(unity, False)
-                unity.SetLineStyle(2)
-                unity.SetLineColor(ROOT.kGray + 2)
-                unity.Draw()
-
-        canvas.Update()
-        canvas.SaveAs(output_pdf)
-        return f"Saved signal-vs-background comparison to {output_pdf}"
-
-    # use_full_stack: backgrounds + signals both in the stack, data overlay
-    stack = ROOT.THStack("hs_sig_bkg", "")
-    ROOT.SetOwnership(stack, False)
-    for h in background_hists:
-        stack.Add(h)
-    for h in signal_hists:
-        stack.Add(h)
-
-    stack.Draw("HIST")
-    stack.GetXaxis().SetTitle(variable)
-    stack.GetYaxis().SetTitle(y_title)
-    if show_ratio:
-        stack.GetXaxis().SetLabelSize(0)
-        stack.GetXaxis().SetTitleSize(0)
-        stack.GetYaxis().SetTitleSize(0.055)
-        stack.GetYaxis().SetLabelSize(0.045)
-
-    stack_max = stack.GetMaximum()
-    data_max = data_hist.GetMaximum() if data_hist else 0.0
-    stack.SetMaximum(max(stack_max, data_max) * 1.35)
-
-    all_mc_hists = background_hists + signal_hists
-    mc_stat_band = all_mc_hists[0].Clone("h_mc_stat_band")
-    mc_stat_band.SetDirectory(0)
-    ROOT.SetOwnership(mc_stat_band, False)
-    for h in all_mc_hists[1:]:
-        mc_stat_band.Add(h)
-    mc_stat_band.SetFillStyle(3354)
-    mc_stat_band.SetFillColor(ROOT.kGray + 2)
-    mc_stat_band.SetLineColor(ROOT.kGray + 2)
-    mc_stat_band.SetMarkerSize(0)
-    mc_stat_band.Draw("E2 SAME")
-
-    if data_hist:
-        data_hist.Draw("PE1 SAME")
-
-    legend.Draw()
-
-    if show_ratio and lower_pad is not None:
-        total_mc = all_mc_hists[0].Clone("h_total_mc_for_ratio")
-        total_mc.SetDirectory(0)
-        ROOT.SetOwnership(total_mc, False)
-        for h in all_mc_hists[1:]:
-            total_mc.Add(h)
-
-        ratio = data_hist.Clone("h_data_mc_ratio")
-        ratio.SetDirectory(0)
-        ROOT.SetOwnership(ratio, False)
-        ratio.Divide(data_hist, total_mc, 1.0, 1.0, "B")
-
-        lower_pad.cd()
-        _style_ratio_hist(ratio, variable, "Data/MC")
-        ratio.Draw("PE1")
-
-        x_axis = ratio.GetXaxis()
-        unity = ROOT.TLine(x_axis.GetXmin(), 1.0, x_axis.GetXmax(), 1.0)
-        ROOT.SetOwnership(unity, False)
-        unity.SetLineStyle(2)
-        unity.SetLineColor(ROOT.kGray + 2)
-        unity.Draw()
-
-    canvas.Update()
-    canvas.SaveAs(output_pdf)
-    return f"Saved signal-vs-background comparison to {output_pdf}"
+    return _draw_sig_bkg_full_stack(
+        background_hists, signal_hists, data_hist, legend, variable, y_title,
+        output_pdf, show_ratio, canvas, lower_pad,
+    )
 
 
 # ============================================================================
 # 2D PLOTTING: 2D histograms and kinematic correlations
 # ============================================================================
+
+def _draw_2d_hist_and_save(h2, canvas_name: str, xlabel: str, ylabel: str, color_palette: int,
+                            output_pdf: str, zlabel: str = "", logz: bool = False):
+    # Style a TH2 (axis titles, z-palette), draw it COLZ, and save; shared by _plot_2d_hist/_plot_2d_tree.
+    canv = ROOT.TCanvas(_unique_canvas_name(canvas_name), "2D Histogram", 900, 700)
+    h2.GetXaxis().SetTitle(xlabel)
+    h2.GetYaxis().SetTitle(ylabel)
+    if zlabel:
+        h2.GetZaxis().SetTitle(zlabel)
+    if logz:
+        canv.SetLogz(1)
+
+    ROOT.gStyle.SetPalette(color_palette)
+    h2.Draw("COLZ")
+    canv.Update()
+    canv.SaveAs(output_pdf)
+    return canv
+
 
 def _plot_2d_hist(
     file_path: str,
@@ -1254,41 +1280,19 @@ def _plot_2d_hist(
     color_palette: int = 1,
 ):
     # Plot a stored TH2 with a colour-z palette and save to PDF.
-    f = ROOT.TFile.Open(file_path)
-    if not f or f.IsZombie():
-        return f"Error: Could not open file {file_path}"
-
-    h = f.Get(hist_name)
-    if not h:
-        f.Close()
-        return f"Error: Histogram {hist_name} not found in file {file_path}"
-
-    h.SetDirectory(0)
-    ROOT.SetOwnership(h, False)
-    f.Close()
+    h, err = _load_hist(file_path, hist_name, 1)
+    if err:
+        return err
 
     if rebin_x > 1:
         h.RebinX(rebin_x)
     if rebin_y > 1:
         h.RebinY(rebin_y)
 
-    if normalize and h.Integral() > 0:
-        h.Scale(1.0 / h.Integral())
+    if normalize:
+        _normalize_hist(h)
 
-    canv = ROOT.TCanvas(_unique_canvas_name("c2d"), "2D Histogram", 900, 700)
-
-    h.GetXaxis().SetTitle(xlabel)
-    h.GetYaxis().SetTitle(ylabel)
-    h.GetZaxis().SetTitle(zlabel)
-
-    if logz:
-        canv.SetLogz(1)
-
-    ROOT.gStyle.SetPalette(color_palette)
-    h.Draw("COLZ")
-
-    canv.Update()
-    canv.SaveAs(output_pdf)
+    _draw_2d_hist_and_save(h, "c2d", xlabel, ylabel, color_palette, output_pdf, zlabel=zlabel, logz=logz)
     return f"Saved 2D histogram to {output_pdf}"
 
 
@@ -1319,12 +1323,10 @@ def _plot_2d_tree(
     try:
         df = ROOT.RDataFrame(tree_name, file_path)
     except Exception:
-        # Fallback to TTree::Draw if RDataFrame not available
         df = None
 
     h2 = None
     if df is not None:
-        # Apply cuts via RDataFrame filters if requested
         if apply_cuts_before_plot:
             df = _apply_cuts(df, file_path, tree_name, cuts, vector_mode)
 
@@ -1342,10 +1344,9 @@ def _plot_2d_tree(
             h2 = None
 
     if h2 is None:
-        # Fallback: use TTree.Draw with an optional selection string
-        f = ROOT.TFile.Open(file_path)
-        if not f or f.IsZombie():
-            return f"Error: Could not open file {file_path}"
+        f, err = _open_root_file_or_error(file_path)
+        if err:
+            return err
 
         tree = f.Get(tree_name)
         if not tree:
@@ -1391,16 +1392,8 @@ def _plot_2d_tree(
         except Exception:
             pass
 
-    canv = ROOT.TCanvas(_unique_canvas_name("c2d_tree"), "2D Histogram", 900, 700)
-    h2.GetXaxis().SetTitle(xlabel if xlabel else x_branch)
-    h2.GetYaxis().SetTitle(ylabel if ylabel else y_branch)
-
-    ROOT.gStyle.SetPalette(color_palette)
-    h2.Draw("COLZ")
-
-    canv.Update()
-    canv.SaveAs(output_pdf)
-
+    _draw_2d_hist_and_save(h2, "c2d_tree", xlabel if xlabel else x_branch, ylabel if ylabel else y_branch,
+                            color_palette, output_pdf)
     return f"Saved 2D histogram ({y_branch} vs {x_branch}) to {output_pdf}"
 
 
@@ -1416,8 +1409,7 @@ def _get_hist(f, name: str):
     if not h:
         return None
     try:
-        h.SetDirectory(0)
-        ROOT.SetOwnership(h, False)
+        _detach(h)
     except Exception:
         pass
     return h
@@ -1439,9 +1431,9 @@ def _counting_window_inputs(
     if not p:
         return None, "Error: file_path is required."
 
-    f = _open_root_file(p)
-    if not f:
-        return None, f"Error: could not open file {p}."
+    f, err = _open_root_file_or_error(p)
+    if err:
+        return None, err
 
     hbkg = _get_hist(f, bkg_name)
     hsig = _get_hist(f, sig_name)
@@ -1452,7 +1444,6 @@ def _counting_window_inputs(
     if hbkg is None or hsig is None:
         return None, "Error: required histograms not found in file."
 
-    # Auto-detect histogram range if center/window not provided
     if center is None or window is None:
         ax = hbkg.GetXaxis()
         xmin = ax.GetXmin()
@@ -1467,9 +1458,6 @@ def _counting_window_inputs(
         n_obs = max(0, int(round(_fractional_integral(hdata, center, window))))
 
     return {"n_bkg": n_bkg, "n_sig": n_sig, "n_obs": n_obs, "center": center, "window": window}, None
-
-
-
 
 
 # ============================================================================
@@ -1534,7 +1522,9 @@ def _poisson_sf_geq(n: int, mu: float) -> float:
 def _significance_from_pvalue(pvalue: float) -> float:
     # Convert a one-sided p-value to a Gaussian significance Z = Phi^{-1}(1 - p).
     pvalue_val = _clip_probability(float(pvalue))
-    if not (0.0 < pvalue_val < 1.0):
+    if pvalue_val <= 0.0:
+        return float("inf")
+    if pvalue_val >= 1.0:
         return 0.0
     try:
         return max(0.0, float(norm.isf(pvalue_val)))
@@ -1542,19 +1532,20 @@ def _significance_from_pvalue(pvalue: float) -> float:
         return 0.0
 
 
-def _compute_significance_from_yields(S: float, B: float) -> float:
+def _asimov_discovery_significance(n_sig: float, n_bkg: float) -> float:
     # Compute Asimov discovery significance Z from signal and background yields.
-    s = float(S)
-    b = float(B)
+    s = max(0.0, float(n_sig))
+    b = max(0.0, float(n_bkg))
     if s <= 0.0 and b <= 0.0:
         return float("nan")
     if b <= 0.0:
         return float("inf") if s > 0.0 else float("nan")
 
-    # Use Asimov observed count n = round(S+B) against background-only hypothesis.
-    n_obs = max(0, int(round(s + b)))
-    p0 = _poisson_sf_geq(n_obs, b)
-    return _significance_from_pvalue(p0)
+    return math.sqrt(2.0 * ((s + b) * math.log1p(s / b) - s))
+
+
+def _compute_significance_from_yields(S: float, B: float) -> float:
+    return _asimov_discovery_significance(S, B)
 
 
 def _optimal_cut_significance(S: float, B: float) -> float:
@@ -1607,11 +1598,16 @@ def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None,
     n_bkg_val = max(0.0, float(n_bkg))
     n_sig_val = max(0.0, float(n_sig))
 
-    def _line(n: int) -> str:
+    def _line(n: int, expected_asimov: bool = False) -> str:
         n_val = max(0, int(n))
-        stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val, compute_cls=compute_cls)
-        p0 = stats.get("p0_obs", float("nan"))
-        z = stats.get("z_obs", float("nan"))
+        if expected_asimov:
+            z = _asimov_discovery_significance(n_sig_val, n_bkg_val)
+            p0 = _clip_probability(float(norm.sf(z))) if math.isfinite(z) else 0.0
+            stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val, compute_cls=compute_cls)
+        else:
+            stats = _compute_counting_stats(n_val, n_bkg_val, n_sig_val, compute_cls=compute_cls)
+            p0 = stats.get("p0_obs", float("nan"))
+            z = stats.get("z_obs", float("nan"))
         z_str = f"{z:.4g}sigma"
         base = f"N={n_val}  p0={p0:.4g}  Z={z_str}"
         if compute_cls:
@@ -1622,8 +1618,285 @@ def _stat_summary(n_bkg: float, n_sig: float, n_obs: Optional[int] = None,
         return base
 
     n_exp = max(0, int(round(n_bkg_val + n_sig_val)))
-    result = f"Expected(S+B Asimov): {_line(n_exp)}"
+    result = f"Expected(S+B Asimov): {_line(n_exp, expected_asimov=True)}"
     if n_obs is not None:
         result += f" | Observed: {_line(n_obs)}"
     return result
 
+
+# ROOFIT MODEL BUILDING: shared dataset/pdf construction for fit_model and the RooStats tools.
+
+_SIGNAL_SHAPES = {"gauss", "crystalball", "voigt"}
+_BACKGROUND_SHAPES = {"", "expo", "chebychev", "poly"}
+
+
+def _build_roofit_dataset(source, file_path, tree_name, variable, hist_name, xmin, xmax):
+    # Build a RooFit observable + dataset from a TTree branch (unbinned) or a stored TH1 (binned).
+    if source == "tree":
+        if not tree_name or not variable:
+            return None, "Error: tree_name and variable are required when source='tree'."
+        if xmin >= xmax:
+            return None, "Error: xmin must be less than xmax."
+
+        f = _open_root_file(file_path)
+        if not f:
+            return None, "Error: could not open ROOT file."
+
+        tree = f.Get(tree_name)
+        if not tree:
+            f.Close()
+            return None, f"Error: tree '{tree_name}' not found."
+
+        x = ROOT.RooRealVar(variable, variable, xmin, xmax)
+        data = ROOT.RooDataSet(
+            _unique_canvas_name("ds"), "ds", ROOT.RooArgSet(x), ROOT.RooFit.Import(tree)
+        )
+        f.Close()
+        return {
+            "x": x, "data": data, "n_events": data.numEntries(),
+            "label": variable, "xmin": xmin, "xmax": xmax,
+        }, None
+
+    elif source == "hist":
+        if not hist_name:
+            return None, "Error: hist_name is required when source='hist'."
+
+        f = _open_root_file(file_path)
+        if not f:
+            return None, "Error: could not open ROOT file."
+
+        h = _get_hist(f, hist_name)
+        f.Close()
+        if not h:
+            return None, f"Error: histogram '{hist_name}' not found."
+
+        hxmin, hxmax = h.GetXaxis().GetXmin(), h.GetXaxis().GetXmax()
+        x = ROOT.RooRealVar(hist_name, hist_name, hxmin, hxmax)
+        data = ROOT.RooDataHist(_unique_canvas_name("dh"), "dh", ROOT.RooArgList(x), h)
+        return {
+            "x": x, "data": data, "n_events": data.sumEntries(),
+            "label": hist_name, "xmin": hxmin, "xmax": hxmax,
+        }, None
+
+    else:
+        return None, "Error: source must be 'tree' or 'hist'."
+
+
+def _build_signal_pdf(x, shape_key, mean=0.0, mean_range=None, sigma=1.0, sigma_range=None,
+                       alpha=1.5, alpha_range=None, n=2.0, n_range=None,
+                       width=0.1, width_range=None, xmin=None, xmax=None):
+    # Build a signal RooAbsPdf on observable x from one of fit_model's shape presets.
+    mean_lo, mean_hi = mean_range or (xmin, xmax)
+    sigma_lo, sigma_hi = sigma_range or (1e-3, xmax - xmin)
+
+    if shape_key == "gauss":
+        mean_v = ROOT.RooRealVar("mean", "mean", mean, mean_lo, mean_hi)
+        sigma_v = ROOT.RooRealVar("sigma", "sigma", sigma, sigma_lo, sigma_hi)
+        pdf = ROOT.RooGaussian("gauss", "gauss", x, mean_v, sigma_v)
+        params = [mean_v, sigma_v]
+    elif shape_key == "crystalball":
+        mean_v = ROOT.RooRealVar("mean", "mean", mean, mean_lo, mean_hi)
+        sigma_v = ROOT.RooRealVar("sigma", "sigma", sigma, sigma_lo, sigma_hi)
+        alpha_lo, alpha_hi = alpha_range or (0.05, 10.0)
+        n_lo, n_hi = n_range or (0.5, 60.0)
+        alpha_v = ROOT.RooRealVar("alpha", "alpha", alpha, alpha_lo, alpha_hi)
+        n_v = ROOT.RooRealVar("n", "n", n, n_lo, n_hi)
+        pdf = ROOT.RooCBShape("crystalball", "crystalball", x, mean_v, sigma_v, alpha_v, n_v)
+        params = [mean_v, sigma_v, alpha_v, n_v]
+    elif shape_key == "voigt":
+        mean_v = ROOT.RooRealVar("mean", "mean", mean, mean_lo, mean_hi)
+        sigma_v = ROOT.RooRealVar("sigma", "sigma", sigma, sigma_lo, sigma_hi)
+        width_lo, width_hi = width_range or (1e-3, xmax - xmin)
+        width_v = ROOT.RooRealVar("width", "width", width, width_lo, width_hi)
+        pdf = ROOT.RooVoigtian("voigt", "voigt", x, mean_v, width_v, sigma_v)
+        params = [mean_v, sigma_v, width_v]
+    else:
+        return None, f"Error: signal_shape must be one of {sorted(_SIGNAL_SHAPES)}."
+
+    return {"pdf": pdf, "params": params}, None
+
+
+def _build_background_pdf(x, bkg_key, tau=-0.1, tau_range=None, poly_coeffs=None, poly_coeff_range=1.0):
+    # Build a background RooAbsPdf on observable x, or (None, None) if bkg_key == ''.
+    if not bkg_key:
+        return None, None
+
+    if bkg_key == "expo":
+        tau_lo, tau_hi = tau_range or (-10.0, 10.0)
+        tau_v = ROOT.RooRealVar("tau", "tau", tau, tau_lo, tau_hi)
+        pdf = ROOT.RooExponential("expo", "expo", x, tau_v)
+        return {"pdf": pdf, "params": [tau_v]}, None
+
+    if bkg_key in ("chebychev", "poly"):
+        coeffs = poly_coeffs or [0.0]
+        coeff_vars = ROOT.RooArgList()
+        params = []
+        for i, c0 in enumerate(coeffs, start=1):
+            cv = ROOT.RooRealVar(f"c{i}", f"c{i}", c0, -poly_coeff_range, poly_coeff_range)
+            coeff_vars.add(cv)
+            params.append(cv)
+        if bkg_key == "chebychev":
+            pdf = ROOT.RooChebychev("chebychev", "chebychev", x, coeff_vars)
+        else:
+            pdf = ROOT.RooPolynomial("poly", "poly", x, coeff_vars)
+        return {"pdf": pdf, "params": params}, None
+
+    return None, f"Error: background_shape must be one of {sorted(s for s in _BACKGROUND_SHAPES if s)} or ''."
+
+
+def _build_extended_model(sig_pdf, bkg_pdf, n_events, nsig_init=100.0, nsig_range=None,
+                           nbkg_init=100.0, nbkg_range=None):
+    # Compose an extended RooAddPdf(signal, background) with floating nsig/nbkg yields.
+    if bkg_pdf is None:
+        return None, "Error: _build_extended_model requires a background pdf."
+    nsig_lo, nsig_hi = nsig_range or (0.0, 2 * max(n_events, 1.0))
+    nbkg_lo, nbkg_hi = nbkg_range or (0.0, 2 * max(n_events, 1.0))
+    nsig = ROOT.RooRealVar("nsig", "nsig", nsig_init, nsig_lo, nsig_hi)
+    nbkg = ROOT.RooRealVar("nbkg", "nbkg", nbkg_init, nbkg_lo, nbkg_hi)
+    model = ROOT.RooAddPdf(
+        _unique_canvas_name("model"), "model",
+        ROOT.RooArgList(sig_pdf, bkg_pdf), ROOT.RooArgList(nsig, nbkg),
+    )
+    return {"model": model, "nsig": nsig, "nbkg": nbkg}, None
+
+
+# ============================================================================
+# ROOSTATS MODEL BUILDING & CLS SCAN: shared by roostats_tools.py
+# ============================================================================
+
+_REQUIRED_BACKGROUND_SHAPES = sorted(s for s in _BACKGROUND_SHAPES if s)
+
+# Wider than fit_model's default (0, 2*N_events) since CLs limits can sit well above N_events.
+_ROOSTATS_YIELD_RANGE_MULT = 20.0
+_POI_BOUNDARY_REL_TOL = 1e-3
+_POI_EXPAND_FACTOR = 10.0
+_POI_MAX_EXPANSIONS = 5
+
+
+def _prepare_roostats_model(
+    source, signal_shape, background_shape, file_path, tree_name, variable, hist_name,
+    xmin, xmax, mean, mean_range, sigma, sigma_range, alpha, alpha_range, n, n_range,
+    width, width_range, tau, tau_range, poly_coeffs, poly_coeff_range,
+    nsig_init, nsig_range, nbkg_init, nbkg_range,
+):
+    # Shared by compute_discovery_significance/compute_upper_limit; unlike fit_model, background_shape is required.
+    source_key = (source or "").strip().lower()
+    shape_key = (signal_shape or "").strip().lower()
+    bkg_key = (background_shape or "").strip().lower()
+
+    if source_key not in {"tree", "hist"}:
+        return None, "Error: source must be 'tree' or 'hist'."
+    if shape_key not in _SIGNAL_SHAPES:
+        return None, f"Error: signal_shape must be one of {sorted(_SIGNAL_SHAPES)}."
+    if bkg_key not in _REQUIRED_BACKGROUND_SHAPES:
+        return None, (
+            f"Error: background_shape is required and must be one of {_REQUIRED_BACKGROUND_SHAPES} "
+            "(a background model is required for discovery/limit calculations)."
+        )
+
+    ds_info, err = _build_roofit_dataset(source_key, file_path, tree_name, variable, hist_name, xmin, xmax)
+    if err:
+        return None, err
+    x = ds_info["x"]
+    data = ds_info["data"]
+    n_events = ds_info["n_events"]
+    label = ds_info["label"]
+    xmin, xmax = ds_info["xmin"], ds_info["xmax"]
+
+    sig_info, err = _build_signal_pdf(
+        x, shape_key, mean, mean_range, sigma, sigma_range, alpha, alpha_range,
+        n, n_range, width, width_range, xmin, xmax,
+    )
+    if err:
+        return None, err
+
+    bkg_info, err = _build_background_pdf(x, bkg_key, tau, tau_range, poly_coeffs, poly_coeff_range)
+    if err:
+        return None, err
+
+    if nsig_range is None:
+        nsig_range = (0.0, _ROOSTATS_YIELD_RANGE_MULT * max(n_events, 1.0))
+    if nbkg_range is None:
+        nbkg_range = (0.0, _ROOSTATS_YIELD_RANGE_MULT * max(n_events, 1.0))
+
+    ext_info, err = _build_extended_model(
+        sig_info["pdf"], bkg_info["pdf"], n_events, nsig_init, nsig_range, nbkg_init, nbkg_range
+    )
+    if err:
+        return None, err
+
+    return {
+        "x": x, "data": data, "n_events": n_events, "label": label,
+        "model": ext_info["model"], "nsig": ext_info["nsig"], "nbkg": ext_info["nbkg"],
+        "shapes": f"{shape_key}+{bkg_key}",
+        "_sig_info": sig_info, "_bkg_info": bkg_info,
+    }, None
+
+
+def _build_sb_model_configs(x, data, model, nsig):
+    # Two ModelConfigs sharing one imported pdf, differing only by the nsig snapshot (S+B vs. 0).
+    try:
+        w = ROOT.RooWorkspace(_unique_canvas_name("ws"))
+        getattr(w, "import")(model)
+        data_name = _unique_canvas_name("obsdata")
+        getattr(w, "import")(data, ROOT.RooFit.Rename(data_name))
+
+        w_pdf = w.pdf(model.GetName())
+        w_x = w.var(x.GetName())
+        w_nsig = w.var(nsig.GetName())
+        w_obs = ROOT.RooArgSet(w_x)
+
+        all_params = w_pdf.getParameters(w_obs)
+        nuisance_params = all_params.Clone(_unique_canvas_name("nuisance"))
+        nuisance_params.remove(w_nsig)
+
+        mc_sb = ROOT.RooStats.ModelConfig(_unique_canvas_name("ModelConfig_sb"), w)
+        mc_sb.SetPdf(w_pdf)
+        mc_sb.SetParametersOfInterest(ROOT.RooArgSet(w_nsig))
+        mc_sb.SetObservables(w_obs)
+        mc_sb.SetNuisanceParameters(nuisance_params)
+        w_nsig.setVal(nsig.getVal())
+        mc_sb.SetSnapshot(ROOT.RooArgSet(w_nsig))
+        getattr(w, "import")(mc_sb)
+
+        mc_b = mc_sb.Clone(_unique_canvas_name("ModelConfig_bonly"))
+        w_nsig.setVal(0.0)
+        mc_b.SetSnapshot(ROOT.RooArgSet(w_nsig))
+        getattr(w, "import")(mc_b)
+
+        return {
+            "w": w, "mc_sb": mc_sb, "mc_b": mc_b,
+            "data_name": data_name, "nsig_name": w_nsig.GetName(),
+        }, None
+    except Exception as exc:
+        return None, f"Error: {exc}."
+
+
+def _run_cls_scan(w, ws_info, confidence_level, scan_points, poi_min, poi_max):
+    # Fresh calculator each call: the adaptive scan reads the POI range at construction time.
+    ac = ROOT.RooStats.AsymptoticCalculator(w.data(ws_info["data_name"]), ws_info["mc_b"], ws_info["mc_sb"])
+    ac.SetOneSided(True)
+
+    hti = ROOT.RooStats.HypoTestInverter(ac)
+    hti.SetConfidenceLevel(confidence_level)
+    hti.UseCLs(True)
+    hti.SetVerbose(False)
+
+    if scan_points is not None:
+        w_nsig = w.var(ws_info["nsig_name"])
+        lo = poi_min if poi_min is not None else w_nsig.getMin()
+        hi = poi_max if poi_max is not None else w_nsig.getMax()
+        hti.SetFixedScan(int(scan_points), lo, hi)
+
+    result = hti.GetInterval()
+    obs_ul = result.UpperLimit()
+    med = result.GetExpectedUpperLimit(0)
+    p1 = result.GetExpectedUpperLimit(1)
+    m1 = result.GetExpectedUpperLimit(-1)
+    p2 = result.GetExpectedUpperLimit(2)
+    m2 = result.GetExpectedUpperLimit(-2)
+    return obs_ul, med, p1, m1, p2, m2
+
+
+def _at_poi_boundary(values, hi, rel_tol=_POI_BOUNDARY_REL_TOL):
+    return any(v is not None and v >= hi * (1.0 - rel_tol) for v in values)

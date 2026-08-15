@@ -1,9 +1,23 @@
 from typing import List
 import ROOT
 import pandas as pd
-from langchain_core.tools import tool
 
-@tool
+
+def _looks_like_vector_column(values) -> bool:
+    if getattr(values, "ndim", 1) > 1:
+        return True
+
+    for value in values:
+        if value is None or isinstance(value, (str, bytes)):
+            continue
+        try:
+            len(value)
+            return True
+        except TypeError:
+            return False
+    return False
+
+
 def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output_csv: str, max_vector_size: int = 4) -> str:
     """Export TTree branches to a flattened CSV file, expanding vector branches into per-element columns.
 
@@ -21,11 +35,11 @@ def root_tree_to_csv(file_path: str, tree_name: str, branches: List[str], output
 
     flat_dict = {}
     for branch, array in data.items():
-        if array.ndim == 1:  # scalar
-            flat_dict[branch] = array
-        else:  # vector branch
+        if _looks_like_vector_column(array):
             for i in range(max_vector_size):
                 flat_dict[f"{branch}_{i}"] = [a[i] if i < len(a) else None for a in array]
+        else:
+            flat_dict[branch] = array
 
     pandas_df = pd.DataFrame(flat_dict)
     pandas_df.to_csv(output_csv, index=False)

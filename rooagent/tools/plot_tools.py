@@ -1,7 +1,6 @@
 from typing import List, Optional
 
 import ROOT
-from langchain_core.tools import tool
 
 from .utils import (
     _normalize_parallel_arrays,
@@ -15,7 +14,6 @@ from .utils import (
 )
 
 
-@tool
 def plot(
     mode: str,
     output_pdf: str,
@@ -50,6 +48,7 @@ def plot(
     data_label: str = "Data",
     plot_data: bool = False,
     stack_signal: bool = True,
+    stack_backgrounds_only: bool = False,
 ):
     """Plot 1D distributions from histograms or TTree branches.
 
@@ -88,6 +87,8 @@ def plot(
         background_files / background_labels: Background inputs.
         data_file / data_label / plot_data: Optional observed-data overlay.
         stack_signal: When False, signals are overlaid as lines instead of stacked.
+        stack_backgrounds_only: Backward-compatible alias for older clients; when True,
+            signals are never stacked.
 
     Returns: Confirmation with saved path, or error string.
     """
@@ -164,6 +165,7 @@ def plot(
         )
 
     if mode_key in {"signal_background", "signal_vs_backgrounds"}:
+        effective_stack_signal = False if stack_backgrounds_only else stack_signal
         return _plot_signal_vs_backgrounds(
             signal_file=signal_file,
             signal_files=signal_files,
@@ -187,13 +189,12 @@ def plot(
             cuts=cuts,
             vector_mode=vector_mode,
             apply_cuts_before_plot=apply_cuts_before_plot,
-            stack_signal=stack_signal,
+            stack_signal=effective_stack_signal,
         )
 
     return "Error: unsupported mode. Use one of: hist, tree, tree_compare, hist_compare, signal_background."
 
 
-@tool
 def plot_2d(
     mode: str,
     output_pdf: str,
@@ -298,7 +299,6 @@ def plot_2d(
     return "Error: unsupported mode. Use one of: hist, tree."
 
 
-@tool
 def plot_significance_and_cls(
     parameter_values: Optional[List[float]] = None,
     significance: Optional[List[Optional[float]]] = None,

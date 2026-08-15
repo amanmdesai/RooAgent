@@ -1,9 +1,7 @@
 import ROOT
-from langchain_core.tools import tool
-from .utils import _unique_canvas_name
+from .utils import _unique_canvas_name, _open_root_file, _get_hist, _build_tree_hist
 
 
-@tool
 def fit_distribution(
     source: str,
     fit_function: str,
@@ -37,28 +35,28 @@ def fit_distribution(
         if not tree_name or not variable:
             return "Error: tree_name and variable are required when source='tree'."
 
-        df = ROOT.RDataFrame(tree_name, file_path)
-        hist_ptr = df.Histo1D((variable, variable, bins, xmin, xmax), variable)
-        h = hist_ptr.GetValue()
-        h.SetDirectory(0)
-        ROOT.SetOwnership(h, False)
+        h = _build_tree_hist(
+            file_path=file_path,
+            tree_name=tree_name,
+            variable=variable,
+            bins=bins,
+            xmin=xmin,
+            xmax=xmax,
+            hist_name=variable,
+        )
         label = variable
     elif source_key == "hist":
         if not hist_name:
             return "Error: hist_name is required when source='hist'."
 
-        f = ROOT.TFile.Open(file_path)
-        if not f or f.IsZombie():
+        f = _open_root_file(file_path)
+        if not f:
             return "Error: could not open ROOT file."
 
-        h = f.Get(hist_name)
-        if not h:
-            f.Close()
-            return f"Histogram '{hist_name}' not found."
-
-        h.SetDirectory(0)
-        ROOT.SetOwnership(h, False)
+        h = _get_hist(f, hist_name)
         f.Close()
+        if not h:
+            return f"Histogram '{hist_name}' not found."
         label = hist_name
     else:
         return "Error: source must be 'tree' or 'hist'."

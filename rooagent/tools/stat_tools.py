@@ -1,6 +1,5 @@
 from typing import Dict, List, Optional
 
-from langchain_core.tools import tool
 from .utils import (
     _counting_window_inputs,
     _format_scan_summary,
@@ -9,7 +8,6 @@ from .utils import (
 )
 
 
-@tool
 def histogram_significance_and_cls(
     file_path: str,
     data_name: str = "",
@@ -63,7 +61,6 @@ def histogram_significance_and_cls(
     return f"{header} | {_stat_summary(n_bkg, n_sig, n_obs, compute_cls=compute_cls)}"
 
 
-@tool
 def summarize_parameter_scan(
     parameter_values: List[float],
     series: Dict[str, List[float]] = {},

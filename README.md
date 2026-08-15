@@ -15,8 +15,8 @@ Under the hood, an LLM reads your prompt, picks the right analysis tool, fills i
 
 **Two ways to use it:**
 
-- **LangGraph agent** — works with GPT-4.1 (GitHub Copilot) or DeepSeek-V3 (Ollama running locally).
-- **MCP server** — drop it into a Claude CLI session; no LangChain required.
+- **LangGraph agent** — a standalone chatbot; pick a provider via `LLM_PROVIDER`: Claude (default) or ChatGPT.
+- **MCP server** — drop it into a Claude/Codex CLI session.
 
 ## Quick start
 
@@ -34,39 +34,42 @@ cd RooAgent
 pip install .
 ```
 
+`pip install .` installs everything needed for both modes — no extras.
+
 ## Operating modes
 
-### OpenAI / GitHub Copilot (default)
+### Claude / Anthropic (default)
 
-Set these environment variables before running:
+Pick a provider via `LLM_PROVIDER` and set its key env var:
 
-| Variable | Description |
-|---|---|
-| `GITHUB_TOKEN` | GitHub Copilot authentication token |
-| `MODEL` | *(optional)* Model to use. Default: `openai/gpt-4.1` |
-| `ROOAGENT_SEED` | *(optional)* Random seed. Default: `7` |
+| `LLM_PROVIDER` | Key env var | `MODEL` default |
+|---|---|---|
+| `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
+| `openai` | `OPENAI_API_KEY` | `gpt-5.5` |
 
-### Ollama (local models)
-
-For fully offline use with DeepSeek-V3 or any other locally installed Ollama model:
+`ROOAGENT_SEED` *(optional)* sets the sampling seed. Default: `7`.
 
 ```
-git clone https://github.com/amanmdesai/RooAgent.git
-cd RooAgent
-git checkout ollama_models
-pip install .
+export LLM_PROVIDER=anthropic   # default, can omit
+export ANTHROPIC_API_KEY="..."
+export MODEL=claude-sonnet-5    # optional override
+export ROOAGENT_SEED=7          # optional sampling seed
 ```
 
-Change the model by setting the `MODEL` environment variable.
+To use OpenAI instead:
+
+```
+export LLM_PROVIDER=openai
+export OPENAI_API_KEY="sk-..."
+```
 
 ### Claude CLI via MCP
 
 ```
 git clone https://github.com/amanmdesai/RooAgent.git
 cd RooAgent
-git checkout claude_models
 pip install .
-claude mcp add rooagent --rooagent-mcp
+claude mcp add rooagent -- rooagent-mcp
 ```
 
 Then navigate to your ROOT files and start Claude:
@@ -76,7 +79,33 @@ cd /path/to/your/root/files
 claude
 ```
 
-The `CLAUDE.md` in the repository loads automatically and tells Claude which tools are available — nothing else to configure.
+### Codex CLI via MCP
+
+```
+git clone https://github.com/amanmdesai/RooAgent.git
+cd RooAgent
+pip install .
+
+# Load ROOT first, replacing this path with your ROOT installation.
+source /path/to/root/bin/thisroot.sh
+
+ROOT_LIBDIR="$(root-config --libdir)"
+
+codex mcp add rooagent \
+  --env ROOTSYS="$ROOTSYS" \
+  --env PATH="$ROOTSYS/bin:$PATH" \
+  --env LD_LIBRARY_PATH="$ROOT_LIBDIR:${LD_LIBRARY_PATH:-}" \
+  --env PYTHONPATH="$ROOT_LIBDIR:${PYTHONPATH:-}" \
+  -- rooagent-mcp
+  
+```
+
+If you previously registered RooAgent before loading ROOT, remove and re-add it:
+
+```
+codex mcp remove rooagent
+```
+
 
 ## What it can do
 
@@ -87,18 +116,17 @@ The `CLAUDE.md` in the repository loads automatically and tells Claude which too
 - Fitting
 - Variables
 - Statistics
+- Statistical Inference
 - Export
 
 ## Requirements
 
 - Python >= 3.10
-- CERN ROOT >= 6.34
+- CERN ROOT >= 6.34 (built with RooFit/RooStats)
 
 ## Dependencies
 
-**LangGraph mode:** `langchain`, `langchain-core`, `langgraph`, `langchain-openai` or `langchain-ollama`, `pandas`, `numpy`, `scipy`, `matplotlib`
-
-**MCP mode:** `fastmcp`, `pandas`, `numpy`, `scipy`, `matplotlib`
+`pandas`, `numpy`, `scipy`, `matplotlib`, `mcp[cli]`, `typing_extensions`, `langchain-core`, `langgraph`, `langchain-anthropic`, `langchain-openai`
 
 ## How to cite
 

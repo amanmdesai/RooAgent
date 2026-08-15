@@ -1,4 +1,4 @@
-from langchain_core.tools import tool
+import os
 import ROOT
 from typing import List, Optional
 from .utils import _get_root_files, _open_root_file, _get_trees, _list_objects_recursive
@@ -7,7 +7,6 @@ from .utils import _get_root_files, _open_root_file, _get_trees, _list_objects_r
 # -------------------------
 # Tools (LangChain)
 # -------------------------
-@tool
 def inspect_root_data(
     mode: str = "summary",
     directory: str = ".",
@@ -43,7 +42,7 @@ def inspect_root_data(
 
         report = []
         for rf in root_files:
-            f = _open_root_file(rf)
+            f = _open_root_file(os.path.join(directory, rf))
             if not f:
                 report.append(f"{rf}: ERR")
                 continue

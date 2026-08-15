@@ -1,7 +1,6 @@
 from typing import List, Dict, Optional
 import ROOT
 import os
-from langchain_core.tools import tool
 from .utils import (
     _parse_paths,
     _unique_canvas_name,
@@ -9,6 +8,7 @@ from .utils import (
     _rewrite_vector_cut,
     _build_dataframe,
     _build_tree_hist,
+    _draw_overlay_plot,
     _has_column,
     _filtered_yield,
     _total_yield,
@@ -17,7 +17,6 @@ from .utils import (
 )
 
 
-@tool
 def root_tree_to_histogram(
     file_path: str,
     tree_name: str,
@@ -81,7 +80,6 @@ def root_tree_to_histogram(
     return f"Saved histogram '{chosen_hist_name}' to {output_root}"
 
 
-@tool
 def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
                         vector_mode: str = "any",
                         weight: Optional[str] = None,
@@ -102,7 +100,7 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
     Returns: "yield[w]=<N> cut='<expr>' files=<K>"
     """
 
-    paths = _parse_paths(file_path, file_paths)
+    paths = _parse_paths(file_path, file_paths, allow_cwd_fallback=False)
     if not paths:
         return "Error: no file(s) provided."
 
@@ -116,7 +114,6 @@ def apply_cut_and_count(file_path: str, tree_name: str, cut: str,
     return f"yield{w_tag}={value} cut='{cut}' files={len(paths)}"
 
 
-@tool
 def compute_significance(signal_file: str,
                          tree_name: str,
                          cut: str = "",
@@ -124,7 +121,8 @@ def compute_significance(signal_file: str,
                          vector_mode: str = "any",
                          weight: Optional[str] = None,
                          background_files: Optional[List[str]] = None,
-                         cuts: Optional[List[str]] = None) -> str:
+                         cuts: Optional[List[str]] = None,
+                         signal_files: Optional[List[str]] = None) -> str:
     """Compute discovery significance Z from signal/background yields (Asimov, no CLs).
 
     Prefer passing cuts as a list via `cuts` to avoid C++ operator-precedence problems
@@ -134,7 +132,7 @@ def compute_significance(signal_file: str,
     For histogram-based significance or CLs, use histogram_significance_and_cls instead.
 
     Args:
-        signal_file: Signal ROOT file.
+        signal_file: Signal ROOT file; may be comma-separated.
         tree_name: TTree name.
         cut: Single combined C++ boolean expression (use only for simple, single-condition cuts).
         cuts: Ordered list of C++ boolean expressions applied sequentially (preferred over cut).
@@ -142,16 +140,21 @@ def compute_significance(signal_file: str,
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
         background_files: Additional background files merged with background_file.
+        signal_files: Additional signal files merged with signal_file.
 
     Returns: "S=<N> B=<N> Z=<value>" or "Z=inf" when B=0, or error string.
     """
 
-    bkg_paths = _parse_paths(background_file, background_files)
+    bkg_paths = _parse_paths(background_file, background_files, allow_cwd_fallback=False)
     if not bkg_paths:
         return "Error: no background file(s) provided."
 
-    vector_vars = _get_vector_branches(signal_file, tree_name)
-    sig_df = ROOT.RDataFrame(tree_name, signal_file)
+    sig_paths = _parse_paths(signal_file, signal_files, allow_cwd_fallback=False)
+    if not sig_paths:
+        return "Error: no signal file(s) provided."
+
+    vector_vars = _get_vector_branches(sig_paths[0], tree_name)
+    sig_df = _build_dataframe(tree_name, sig_paths)
     bkg_df = _build_dataframe(tree_name, bkg_paths)
 
     if cuts:
@@ -176,7 +179,6 @@ def compute_significance(signal_file: str,
     significance = _compute_significance_from_yields(S, B)
     return f"S={S} B={B} Z={significance:.3f}"
 
-@tool
 def define_variable(
     file_path: str,
     tree_name: str,
@@ -212,7 +214,6 @@ def define_variable(
     return f"New variable '{new_var_name}' defined and saved to '{output_file}'"
 
 
-@tool
 def define_variable_and_plot(file_path: str, tree_name: str,
                              new_variables: Dict[str, str],
                              variable_to_plot: str,
@@ -238,47 +239,40 @@ def define_variable_and_plot(file_path: str, tree_name: str,
     Returns: "Plot saved to <path>"
     """
 
-    df = ROOT.RDataFrame(tree_name, file_path)
-    vector_vars = _get_vector_branches(file_path, tree_name)
-
-    for name, expr in new_variables.items():
-        df = df.Define(name, expr)
-
-    for cut in (cuts or []):
-        safe_cut = _rewrite_vector_cut(cut, vector_vars, vector_mode)
-        df = df.Filter(safe_cut)
-
-    if weight and _has_column(df, weight):
-        wname = weight
-    else:
-        wname = "__rooagent_unit_weight"
-        df = df.Define(wname, "1.0")
-
-    hist_ptr = df.Histo1D(
-        (variable_to_plot, variable_to_plot, bins, xmin, xmax),
-        variable_to_plot,
-        wname
+    h = _build_tree_hist(
+        file_path=file_path,
+        tree_name=tree_name,
+        variable=variable_to_plot,
+        bins=bins,
+        xmin=xmin,
+        xmax=xmax,
+        hist_name=variable_to_plot,
+        weight_branch=weight or "",
+        cuts=cuts,
+        vector_mode=vector_mode,
+        defines=new_variables,
     )
 
-    h = hist_ptr.GetValue()
-    ROOT.SetOwnership(h, False)
-
-    h.SetLineWidth(3)
     h.SetLineColor(ROOT.kBlue + 1)
+    h.SetLineWidth(3)
 
-    h.GetXaxis().SetTitle(variable_to_plot)
-    h.GetYaxis().SetTitle("Events")
+    legend = ROOT.TLegend(0.65, 0.75, 0.88, 0.88)
+    legend.AddEntry(h, variable_to_plot, "l")
 
-    canvas = ROOT.TCanvas(_unique_canvas_name("c1"), "", 900, 700)
-    h.Draw("HIST")
-
-    canvas.Update()
-    canvas.SaveAs(output_file)
+    _draw_overlay_plot(
+        hist_list=[h],
+        legend=legend,
+        output_pdf=output_file,
+        x_title=variable_to_plot,
+        y_title="Events",
+        canvas_name="c_define_plot",
+        canvas_title="Defined Variable",
+        show_ratio=False,
+    )
 
     return f"Plot saved to {output_file}"
 
 
-@tool
 def find_optimal_cut(signal_file: str,
                      tree_name: str,
                      variable: str,
@@ -289,7 +283,8 @@ def find_optimal_cut(signal_file: str,
                      base_cut: str = "",
                      vector_mode: str = "any",
                      weight: Optional[str] = None,
-                     background_files: Optional[List[str]] = None) -> str:
+                     background_files: Optional[List[str]] = None,
+                     signal_files: Optional[List[str]] = None) -> str:
     """Scan a variable threshold and return the value that maximises S/√(S+B).
 
     Iterates threshold from min_cut to max_cut in steps of step, applying
@@ -297,7 +292,7 @@ def find_optimal_cut(signal_file: str,
     Use summarize_parameter_scan afterwards when comparing multiple scan results.
 
     Args:
-        signal_file: Signal ROOT file.
+        signal_file: Signal ROOT file; may be comma-separated.
         tree_name: TTree name.
         variable: Branch to scan (cut applied as variable > threshold).
         min_cut / max_cut / step: Scan range and step size.
@@ -306,22 +301,26 @@ def find_optimal_cut(signal_file: str,
         vector_mode: How vector-branch cuts are evaluated ('any'/'all').
         weight: Per-event weight branch or expression.
         background_files: Additional background files merged with background_file.
+        signal_files: Additional signal files merged with signal_file.
 
     Returns: Best threshold with S, B, and significance, or error string.
     """
 
-    bkg_paths = _parse_paths(background_file, background_files)
+    bkg_paths = _parse_paths(background_file, background_files, allow_cwd_fallback=False)
     if not bkg_paths:
         return "Error: no background file(s) provided."
+    sig_paths = _parse_paths(signal_file, signal_files, allow_cwd_fallback=False)
+    if not sig_paths:
+        return "Error: no signal file(s) provided."
     if step <= 0:
         return "Error: step must be > 0."
     if max_cut < min_cut:
         return "Error: max_cut must be >= min_cut."
 
-    sig_df = ROOT.RDataFrame(tree_name, signal_file)
+    sig_df = _build_dataframe(tree_name, sig_paths)
     bkg_df = _build_dataframe(tree_name, bkg_paths)
 
-    vector_vars = _get_vector_branches(signal_file, tree_name)
+    vector_vars = _get_vector_branches(sig_paths[0], tree_name)
 
     best_cut = None
     best_sig = -1
@@ -357,14 +356,13 @@ def find_optimal_cut(signal_file: str,
     return (
         f"Optimal cut found:\n"
         f"{variable} > {best_cut}\n"
-        f"Signal file: {signal_file}\n"
+        f"Signal files ({len(sig_paths)}): {', '.join(sig_paths)}\n"
         f"Background files ({len(bkg_paths)}): {', '.join(bkg_paths)}\n"
         f"S = {best_S}, B = {best_B}\n"
         f"Significance = {best_sig:.3f}"
     )
 
 
-@tool
 def generate_cutflow(
     tree_name: str,
     cuts: List[str],
@@ -391,7 +389,7 @@ def generate_cutflow(
 
     Returns: Per-file and combined cutflow tables with yields at each stage, or error string.
     """
-    paths = _parse_paths(file_path, file_paths)
+    paths = _parse_paths(file_path, file_paths, allow_cwd_fallback=False)
     if not paths:
         return "Error: no file(s) provided."
 
@@ -437,7 +435,6 @@ def generate_cutflow(
     return "\n\n".join(output_sections)
 
 
-@tool
 def compute_efficiency(
     file_path: str,
     tree_name: str,
@@ -466,7 +463,7 @@ def compute_efficiency(
     """
     import math as _math
 
-    paths = _parse_paths(file_path, file_paths)
+    paths = _parse_paths(file_path, file_paths, allow_cwd_fallback=False)
     if not paths:
         return "Error: no file(s) provided."
 
